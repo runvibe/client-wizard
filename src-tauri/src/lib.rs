@@ -1,16 +1,19 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    env,
     fs::{self, File, OpenOptions},
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
 use tauri::{
     menu::{ContextMenu, Menu, MenuItem},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Window,
+    App, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window,
 };
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -111,6 +114,24 @@ struct NativeProgressEvent {
     message: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LaunchManifestPayload {
+    manifest_url: String,
+    source: String,
+}
+
+#[derive(Default)]
+struct LaunchManifestState {
+    current: Mutex<LaunchManifestStateInner>,
+}
+
+#[derive(Default)]
+struct LaunchManifestStateInner {
+    payload: Option<LaunchManifestPayload>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FsPathRequest {
@@ -142,6 +163,20 @@ struct FsEntry {
 }
 
 #[tauri::command]
+fn get_launch_manifest_url(
+    state: State<'_, LaunchManifestState>,
+) -> Result<Option<LaunchManifestPayload>, String> {
+    let current = state
+        .current
+        .lock()
+        .map_err(|_| "Estado de inicializacao indisponivel.".to_string())?;
+    if let Some(error) = &current.error {
+        return Err(error.clone());
+    }
+    Ok(current.payload.clone())
+}
+
+#[tauri::command]
 async fn download_package(
     app: AppHandle,
     manifest: BootstrapManifest,
@@ -153,7 +188,10 @@ async fn download_package(
         .map_err(|error| format!("Falha ao baixar pacote: {error}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Pacote retornou status HTTP {}.", response.status()));
+        return Err(format!(
+            "Pacote retornou status HTTP {}.",
+            response.status()
+        ));
     }
 
     let bytes = response
@@ -396,7 +434,10 @@ async fn extract_archive(
 }
 
 #[tauri::command]
-async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_json::Value, String> {
+async fn fs_execute(
+    app: AppHandle,
+    request: FsExecuteRequest,
+) -> Result<serde_json::Value, String> {
     match request.action.as_str() {
         "exists" => {
             let path = resolve_fs_path(&app, request.path.as_ref().ok_or("path e obrigatorio.")?)?;
@@ -413,7 +454,8 @@ async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_j
                 .map_err(|error| format!("Falha ao listar diretorio: {error}"))?
                 .take(500)
             {
-                let entry = entry.map_err(|error| format!("Falha ao ler item do diretorio: {error}"))?;
+                let entry =
+                    entry.map_err(|error| format!("Falha ao ler item do diretorio: {error}"))?;
                 entries.push(fs_stat_with_name(&entry.path())?);
             }
             Ok(serde_json::json!({ "entries": entries }))
@@ -466,7 +508,8 @@ async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_j
         }
         "mkdir" => {
             let path = resolve_fs_path(&app, request.path.as_ref().ok_or("path e obrigatorio.")?)?;
-            fs::create_dir_all(&path).map_err(|error| format!("Falha ao criar diretorio: {error}"))?;
+            fs::create_dir_all(&path)
+                .map_err(|error| format!("Falha ao criar diretorio: {error}"))?;
             Ok(serde_json::json!({ "ok": true, "path": path.display().to_string() }))
         }
         "remove" => {
@@ -482,7 +525,8 @@ async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_j
                         .map_err(|error| format!("Falha ao remover diretorio vazio: {error}"))?;
                 }
             } else {
-                fs::remove_file(&path).map_err(|error| format!("Falha ao remover arquivo: {error}"))?;
+                fs::remove_file(&path)
+                    .map_err(|error| format!("Falha ao remover arquivo: {error}"))?;
             }
             Ok(serde_json::json!({ "ok": true }))
         }
@@ -500,7 +544,8 @@ async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_j
                     fs::create_dir_all(parent)
                         .map_err(|error| format!("Falha ao criar destino da copia: {error}"))?;
                 }
-                fs::copy(&from, &to).map_err(|error| format!("Falha ao copiar arquivo: {error}"))?;
+                fs::copy(&from, &to)
+                    .map_err(|error| format!("Falha ao copiar arquivo: {error}"))?;
             }
             Ok(serde_json::json!({ "ok": true, "path": to.display().to_string() }))
         }
@@ -515,7 +560,8 @@ async fn fs_execute(app: AppHandle, request: FsExecuteRequest) -> Result<serde_j
                 fs::create_dir_all(parent)
                     .map_err(|error| format!("Falha ao criar destino do move: {error}"))?;
             }
-            fs::rename(&from, &to).map_err(|error| format!("Falha ao mover arquivo/diretorio: {error}"))?;
+            fs::rename(&from, &to)
+                .map_err(|error| format!("Falha ao mover arquivo/diretorio: {error}"))?;
             Ok(serde_json::json!({ "ok": true, "path": to.display().to_string() }))
         }
         "openPath" => {
@@ -557,13 +603,9 @@ async fn show_native_menu(app: AppHandle, window: Window) -> Result<(), String> 
     .map_err(|error| format!("Falha ao criar item Trocar manifesto: {error}"))?;
     let audit_item = MenuItem::with_id(&app, "open-audit", "Auditoria", true, None::<&str>)
         .map_err(|error| format!("Falha ao criar item de menu: {error}"))?;
-    let menu = Menu::with_items(
-        &app,
-        &[&about_item, &switch_manifest_item, &audit_item],
-    )
+    let menu = Menu::with_items(&app, &[&about_item, &switch_manifest_item, &audit_item])
         .map_err(|error| format!("Falha ao criar menu nativo: {error}"))?;
-    menu
-        .popup(window)
+    menu.popup(window)
         .map_err(|error| format!("Falha ao abrir menu nativo: {error}"))
 }
 
@@ -699,10 +741,9 @@ async fn run_script(
     let status = match timeout(Duration::from_secs(30), child.wait()).await {
         Ok(result) => result.map_err(|error| format!("Falha ao aguardar executor: {error}"))?,
         Err(_) => {
-            child
-                .kill()
-                .await
-                .map_err(|error| format!("Executor excedeu timeout e nao pode ser encerrado: {error}"))?;
+            child.kill().await.map_err(|error| {
+                format!("Executor excedeu timeout e nao pode ser encerrado: {error}")
+            })?;
             return Err("Executor excedeu o timeout de 30 segundos.".to_string());
         }
     };
@@ -734,7 +775,9 @@ fn validate_https_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|error| format!("URL invalida: {error}"))?;
     let is_localhost = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
     if url.scheme() != "https" && !is_localhost {
-        return Err("Pacotes remotos devem usar HTTPS, exceto localhost para desenvolvimento.".to_string());
+        return Err(
+            "Pacotes remotos devem usar HTTPS, exceto localhost para desenvolvimento.".to_string(),
+        );
     }
     Ok(url)
 }
@@ -997,7 +1040,10 @@ fn sanitize_relative_path(value: &str) -> Result<PathBuf, String> {
 }
 
 fn ensure_relative_not_empty(request: &FsPathRequest) -> Result<(), String> {
-    if sanitize_relative_path(&request.path)?.as_os_str().is_empty() {
+    if sanitize_relative_path(&request.path)?
+        .as_os_str()
+        .is_empty()
+    {
         return Err("Operacao nao permitida na raiz da base.".to_string());
     }
     Ok(())
@@ -1008,7 +1054,8 @@ fn fs_stat(path: &Path) -> Result<FsEntry, String> {
 }
 
 fn fs_stat_with_name(path: &Path) -> Result<FsEntry, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("Falha ao ler metadados: {error}"))?;
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Falha ao ler metadados: {error}"))?;
     Ok(FsEntry {
         name: path
             .file_name()
@@ -1032,8 +1079,11 @@ fn system_time_millis(value: SystemTime) -> Option<u64> {
 }
 
 fn copy_directory(from: &Path, to: &Path) -> Result<(), String> {
-    fs::create_dir_all(to).map_err(|error| format!("Falha ao criar diretorio de copia: {error}"))?;
-    for entry in fs::read_dir(from).map_err(|error| format!("Falha ao ler diretorio de origem: {error}"))? {
+    fs::create_dir_all(to)
+        .map_err(|error| format!("Falha ao criar diretorio de copia: {error}"))?;
+    for entry in
+        fs::read_dir(from).map_err(|error| format!("Falha ao ler diretorio de origem: {error}"))?
+    {
         let entry = entry.map_err(|error| format!("Falha ao ler item de origem: {error}"))?;
         let source = entry.path();
         let target = to.join(entry.file_name());
@@ -1044,7 +1094,8 @@ fn copy_directory(from: &Path, to: &Path) -> Result<(), String> {
                 fs::create_dir_all(parent)
                     .map_err(|error| format!("Falha ao criar diretorio de destino: {error}"))?;
             }
-            fs::copy(&source, &target).map_err(|error| format!("Falha ao copiar arquivo: {error}"))?;
+            fs::copy(&source, &target)
+                .map_err(|error| format!("Falha ao copiar arquivo: {error}"))?;
         }
     }
     Ok(())
@@ -1066,23 +1117,158 @@ fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(canonical_candidate)
 }
 
+fn parse_manifest_launch_args(args: &[String]) -> Option<Result<LaunchManifestPayload, String>> {
+    for (index, arg) in args.iter().enumerate() {
+        if arg.starts_with("client-wizard://") {
+            return Some(parse_manifest_deep_link(arg));
+        }
+
+        if arg == "--manifest" {
+            return Some(
+                args.get(index + 1)
+                    .ok_or_else(|| "--manifest precisa receber a URL do manifesto.".to_string())
+                    .and_then(|manifest_url| {
+                        Ok(LaunchManifestPayload {
+                            manifest_url: validate_launch_manifest_url(manifest_url)?,
+                            source: "cli".to_string(),
+                        })
+                    }),
+            );
+        }
+
+        if let Some(manifest_url) = arg.strip_prefix("--manifest=") {
+            return Some(
+                validate_launch_manifest_url(manifest_url).map(|manifest_url| {
+                    LaunchManifestPayload {
+                        manifest_url,
+                        source: "cli".to_string(),
+                    }
+                }),
+            );
+        }
+    }
+
+    None
+}
+
+fn parse_manifest_deep_link(input: &str) -> Result<LaunchManifestPayload, String> {
+    let url = Url::parse(input).map_err(|error| format!("Link dinamico invalido: {error}"))?;
+    if url.scheme() != "client-wizard" {
+        return Err("Link dinamico deve usar o protocolo client-wizard://.".to_string());
+    }
+
+    if url.host_str() != Some("open") || !matches!(url.path(), "" | "/") {
+        return Err("Link dinamico deve usar client-wizard://open?manifest=...".to_string());
+    }
+
+    if url.fragment().is_some() {
+        return Err("Link dinamico nao aceita fragmento.".to_string());
+    }
+
+    let mut manifest_url = None;
+    for (key, value) in url.query_pairs() {
+        if key != "manifest" {
+            return Err(format!("Parametro de link dinamico nao permitido: {key}."));
+        }
+        if manifest_url.replace(value.to_string()).is_some() {
+            return Err("Link dinamico deve declarar manifest apenas uma vez.".to_string());
+        }
+    }
+
+    Ok(LaunchManifestPayload {
+        manifest_url: validate_launch_manifest_url(
+            &manifest_url.ok_or_else(|| "Link dinamico precisa declarar manifest.".to_string())?,
+        )?,
+        source: "deep-link".to_string(),
+    })
+}
+
+fn validate_launch_manifest_url(value: &str) -> Result<String, String> {
+    let url =
+        Url::parse(value.trim()).map_err(|error| format!("URL do manifesto invalida: {error}"))?;
+    let is_localhost = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if url.scheme() != "https" && !(is_localhost && matches!(url.scheme(), "http" | "https")) {
+        return Err("A URL do manifesto deve usar HTTPS.".to_string());
+    }
+    Ok(url.to_string())
+}
+
+fn apply_manifest_launch_result(app: &AppHandle, result: Result<LaunchManifestPayload, String>) {
+    match result {
+        Ok(payload) => {
+            if let Some(state) = app.try_state::<LaunchManifestState>() {
+                if let Ok(mut current) = state.current.lock() {
+                    current.payload = Some(payload.clone());
+                    current.error = None;
+                }
+            }
+            let _ = app.emit("client-wizard-open-manifest", payload);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }
+        Err(error) => {
+            if let Some(state) = app.try_state::<LaunchManifestState>() {
+                if let Ok(mut current) = state.current.lock() {
+                    current.payload = None;
+                    current.error = Some(error.clone());
+                }
+            }
+            let _ = app.emit("client-wizard-open-manifest-error", error);
+        }
+    }
+}
+
+fn configure_manifest_launch(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    let app_handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        if let Some(url) = event.urls().first() {
+            apply_manifest_launch_result(&app_handle, parse_manifest_deep_link(url.as_str()));
+        }
+    });
+
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Err(error) = app.deep_link().register_all() {
+        eprintln!("Falha ao registrar protocolo client-wizard dinamicamente: {error}");
+    }
+
+    if let Some(result) = parse_manifest_launch_args(&env::args().collect::<Vec<_>>()) {
+        apply_manifest_launch_result(app.handle(), result);
+    }
+
+    if let Some(urls) = app.deep_link().get_current()? {
+        if let Some(url) = urls.first() {
+            apply_manifest_launch_result(app.handle(), parse_manifest_deep_link(url.as_str()));
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
-                "open-audit" => open_audit_window(app),
-                "show-about" => open_about_window(app, serde_json::Value::Null),
-                "switch-manifest" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("client-wizard-switch-manifest", ());
-                        let _ = window.set_focus();
-                    }
-                }
-                _ => {}
+        .manage(LaunchManifestState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(result) = parse_manifest_launch_args(&argv) {
+                apply_manifest_launch_result(app, result);
             }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(configure_manifest_launch)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open-audit" => open_audit_window(app),
+            "show-about" => open_about_window(app, serde_json::Value::Null),
+            "switch-manifest" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("client-wizard-switch-manifest", ());
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            get_launch_manifest_url,
             download_package,
             execute_native,
             download_file,
@@ -1177,6 +1363,58 @@ fn open_markdown_document_window(app: &AppHandle, document_data: serde_json::Val
     .build()
     {
         eprintln!("Falha ao abrir documento Markdown: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_manifest_deep_link() {
+        let payload = parse_manifest_deep_link(
+            "client-wizard://open?manifest=https%3A%2F%2Fexample.com%2Fmanifest.json",
+        )
+        .expect("valid deep link should parse");
+
+        assert_eq!(payload.manifest_url, "https://example.com/manifest.json");
+        assert_eq!(payload.source, "deep-link");
+    }
+
+    #[test]
+    fn rejects_deep_link_with_extra_parameter() {
+        let error = parse_manifest_deep_link(
+            "client-wizard://open?manifest=https%3A%2F%2Fexample.com%2Fmanifest.json&entry=https%3A%2F%2Fevil.test",
+        )
+        .expect_err("extra parameters must be rejected");
+
+        assert!(error.contains("Parametro de link dinamico nao permitido"));
+    }
+
+    #[test]
+    fn accepts_cli_manifest_argument() {
+        let args = vec![
+            "client-wizard".to_string(),
+            "--manifest".to_string(),
+            "http://localhost:1420/sample/manifest.json".to_string(),
+        ];
+        let payload = parse_manifest_launch_args(&args)
+            .expect("manifest argument should be detected")
+            .expect("localhost manifest URL should be accepted");
+
+        assert_eq!(
+            payload.manifest_url,
+            "http://localhost:1420/sample/manifest.json"
+        );
+        assert_eq!(payload.source, "cli");
+    }
+
+    #[test]
+    fn rejects_non_https_remote_manifest() {
+        let error = validate_launch_manifest_url("http://example.com/manifest.json")
+            .expect_err("remote http manifest should be rejected");
+
+        assert_eq!(error, "A URL do manifesto deve usar HTTPS.");
     }
 }
 

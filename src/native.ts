@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ExecutorResult, NativeCommand } from "./types";
 
+export type LaunchManifestPayload = {
+  manifestUrl: string;
+  source: "cli" | "deep-link";
+};
+
 export type DownloadFileRequest = {
   url: string;
   fileName?: string;
@@ -87,6 +92,10 @@ export async function openMarkdownDocumentWindow(documentData: unknown): Promise
 
 export async function showNativeMenu(): Promise<void> {
   return invoke<void>("show_native_menu");
+}
+
+export async function getLaunchManifestUrl(): Promise<LaunchManifestPayload | null> {
+  return invoke<LaunchManifestPayload | null>("get_launch_manifest_url");
 }
 
 export function errorMessage(error: unknown) {

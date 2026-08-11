@@ -14,7 +14,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Progress, ProgressLabel } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { eventsToCsv, listAuditEvents, logAuditEvent, type AuditCategory, type AuditEvent, type AuditEventInput, type AuditLevel } from "./audit";
-import { downloadFile, errorMessage, executeNative, extractArchive, fsExecute, openAboutWindow, openAuditWindow, openExternalUrl, openMarkdownDocumentWindow, type FsExecuteRequest, type FsPath } from "./native";
+import { downloadFile, errorMessage, executeNative, extractArchive, fsExecute, getLaunchManifestUrl, openAboutWindow, openAuditWindow, openExternalUrl, openMarkdownDocumentWindow, type FsExecuteRequest, type FsPath, type LaunchManifestPayload } from "./native";
 import type {
   ActiveSurface,
   ClientWizardManifest,
@@ -130,6 +130,17 @@ export function App() {
     Promise.all([
       listen<NativeProgressEvent>("client-wizard://download-progress", (event) => applyNativeProgress(event.payload)),
       listen<NativeProgressEvent>("client-wizard://extract-progress", (event) => applyNativeProgress(event.payload)),
+      listen<LaunchManifestPayload>("client-wizard-open-manifest", (event) => {
+        if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
+          void loadManifest(event.payload.manifestUrl, event.payload.source);
+        }
+      }),
+      listen<string>("client-wizard-open-manifest-error", (event) => {
+        if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
+          setAppState("idle");
+          setError(event.payload);
+        }
+      }),
       listen("client-wizard-switch-manifest", () => {
         if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
           resetToIdle(stopWorker);
@@ -150,6 +161,29 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (isAuditWindow || isAboutWindow || isDocumentWindow) {
+      return;
+    }
+
+    let active = true;
+    getLaunchManifestUrl()
+      .then((payload) => {
+        if (active && payload) {
+          void loadManifest(payload.manifestUrl, payload.source);
+        }
+      })
+      .catch((caughtError) => {
+        if (active) {
+          setError(errorMessage(caughtError));
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem("clientWizardAbout", JSON.stringify(createAboutData(manifest, manifestUrl)));
   }, [manifest, manifestUrl]);
 
@@ -161,20 +195,25 @@ export function App() {
 
   async function submitManifest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await loadManifest(manifestUrl, "manual");
+  }
+
+  async function loadManifest(inputUrl: string, source: "manual" | LaunchManifestPayload["source"]) {
     setError("");
     setActiveSurface(undefined);
     stopWorker();
 
     try {
       setAppState("loading-manifest");
-      const url = normalizeAllowedUrl(manifestUrl, "manifesto");
+      const url = normalizeAllowedUrl(inputUrl, "manifesto");
+      setManifestUrl(url);
       sessionIdRef.current = crypto.randomUUID();
       audit({
         level: "info",
         category: "manifest",
         action: "manifest.load.start",
         summary: "Carregando manifesto",
-        input: { url }
+        input: { url, source }
       });
       const response = await fetch(url);
       if (!response.ok) {
@@ -199,6 +238,7 @@ export function App() {
         summary: `Manifesto carregado: ${loadedManifest.name}`,
         output: {
           name: loadedManifest.name,
+          source,
           documents: loadedDocuments.map((document) => ({ kind: document.kind, name: document.name, url: document.url })),
           permissions: loadedManifest.permissions.map((permission) => permission.id)
         }

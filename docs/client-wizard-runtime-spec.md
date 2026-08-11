@@ -106,6 +106,46 @@ O app integra somente com endpoints HTTPS validos. A entrada principal e uma URL
 https://wizard.example.com/manifest.json
 ```
 
+### 2.5.1 Inicializacao por link dinamico
+
+O instalador/app deve registrar um protocolo de URL customizado para permitir abrir o Client Wizard ja apontando para um manifesto.
+
+Protocolo canonico:
+
+```text
+client-wizard://open?manifest=https%3A%2F%2Fwizard.example.com%2Fmanifest.json
+```
+
+Regras:
+
+- `client-wizard://open` e a acao padrao para carregar um manifesto.
+- O parametro `manifest` deve conter a URL absoluta do `manifest.json`, percent-encoded.
+- O app deve decodificar, validar e normalizar a URL usando as mesmas regras de `normalizeAllowedUrl`.
+- A abertura por deep link deve preencher a URL na tela inicial e iniciar o carregamento automaticamente.
+- Se o app ja estiver aberto, a nova chamada deve focar a janela principal e iniciar uma nova sessao de manifesto.
+- Se houver um wizard em execucao, o app deve interromper o worker atual antes de carregar o novo manifesto, registrando evento de auditoria.
+- Se o deep link for invalido, o app deve abrir na tela inicial exibindo erro claro e mantendo o campo preenchido com o valor recebido quando possivel.
+
+Tambem deve existir um fallback por linha de comando para automacao e diagnostico:
+
+```bash
+client-wizard --manifest https://wizard.example.com/manifest.json
+```
+
+O comportamento de `--manifest` deve ser equivalente ao deep link.
+
+#### Registro por plataforma
+
+O registro do protocolo deve ser configurado no bundle/instalador do app:
+
+| Plataforma | Registro esperado |
+|---|---|
+| Windows | protocol handler no Registry via NSIS/MSI |
+| macOS | URL scheme `client-wizard` no `Info.plist` do `.app` |
+| Linux | `.desktop` com `MimeType=x-scheme-handler/client-wizard` |
+
+O app nao deve aceitar `entry.url`, documentos ou scripts diretamente no deep link. O deep link sempre aponta apenas para o manifesto; termos, licencas, privacidade, permissoes e artefato continuam sendo carregados e aprovados pelo fluxo normal.
+
 Exemplo:
 
 ```json
@@ -1097,6 +1137,16 @@ message.runtimeId !== activeRuntimeId
 
 ### 10.2 Validacao HTTPS e consentimento
 
+Ao receber um deep link ou argumento CLI:
+
+- O app deve aceitar somente a acao `open`.
+- O parametro aceito deve ser apenas `manifest`.
+- O valor de `manifest` deve ser decodificado uma unica vez e parseado por `new URL(...)`.
+- A URL final deve seguir as mesmas regras HTTPS/localhost da entrada manual.
+- Valores extras no deep link devem ser ignorados e registrados em auditoria como entrada nao utilizada.
+- O deep link nao pode pular telas de documentos, licencas, privacidade ou permissoes.
+- O deep link nao pode autorizar permissoes nem iniciar download de `entry.url` diretamente.
+
 Antes de baixar qualquer recurso alem do manifesto:
 
 - `manifestUrl` deve ser parseavel por `new URL(...)`.
@@ -1220,6 +1270,9 @@ screen.events((eventName, data) => {
 
 - Implementar protocolo canonico da secao 9.
 - Implementar loader de manifest.json HTTPS.
+- Registrar protocolo `client-wizard://` nos bundles Windows, macOS e Linux.
+- Implementar abertura por `client-wizard://open?manifest=...`.
+- Implementar fallback CLI `client-wizard --manifest ...`.
 - Validar estrutura do manifesto.
 - Validar `theme` do manifesto quando presente.
 - Renderizar termos de uso declarados em `terms`, um documento por pagina.
