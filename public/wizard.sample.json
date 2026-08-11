@@ -1,0 +1,76 @@
+{
+  "title": "Provisionar cliente",
+  "description": "Fluxo declarativo renderizado a partir de JSON. Cada step pode coletar dados e chamar comandos nativos controlados pelo Rust.",
+  "version": "0.1.0",
+  "steps": [
+    {
+      "id": "cliente",
+      "title": "Identifique o ambiente",
+      "description": "Colete os dados minimos para selecionar os scripts e politicas corretas.",
+      "fields": [
+        {
+          "id": "clientName",
+          "label": "Nome do cliente",
+          "type": "text",
+          "required": true,
+          "placeholder": "Acme Brasil"
+        },
+        {
+          "id": "environment",
+          "label": "Ambiente",
+          "type": "select",
+          "required": true,
+          "options": [
+            { "label": "Producao", "value": "production" },
+            { "label": "Homologacao", "value": "staging" },
+            { "label": "Laboratorio", "value": "lab" }
+          ]
+        },
+        {
+          "id": "notes",
+          "label": "Observacoes tecnicas",
+          "type": "textarea",
+          "placeholder": "Proxy, restricoes de rede, usuario local..."
+        }
+      ]
+    },
+    {
+      "id": "diagnostico",
+      "title": "Diagnostico local",
+      "description": "O botao abaixo usa a ponte nativa para capturar informacoes do sistema operacional.",
+      "actions": [
+        {
+          "label": "Ler sistema",
+          "command": { "type": "systemInfo" }
+        },
+        {
+          "label": "Listar processos",
+          "command": { "type": "processList" }
+        }
+      ]
+    },
+    {
+      "id": "script",
+      "title": "Executar script permitido",
+      "description": "Exemplo de executor. Em producao, o pacote verificado deve declarar permissoes por comando.",
+      "fields": [
+        {
+          "id": "approved",
+          "label": "Confirmo que este pacote foi validado antes de executar scripts",
+          "type": "checkbox",
+          "required": true
+        }
+      ],
+      "actions": [
+        {
+          "label": "Executar echo",
+          "command": {
+            "type": "runScript",
+            "shell": "powershell",
+            "script": "Write-Output 'Client Wizard executor ativo'"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "name": "Teste de instalacao: LocalSend",
+  "description": "Instala o LocalSend a partir dos pacotes publicos do projeto open source no GitHub.",
+  "version": "0.1.0",
+  "terms": [
+    "./docs/terms.md"
+  ],
+  "license": [],
+  "privacy": [],
+  "entry": {
+    "type": "script",
+    "url": "./wizard.js"
+  },
+  "theme": {
+    "mode": "light",
+    "colors": {
+      "background": "#f8fafc",
+      "foreground": "#0f172a",
+      "primary": "#16a34a",
+      "primaryForeground": "#ffffff",
+      "secondary": "#dcfce7",
+      "secondaryForeground": "#052e16",
+      "muted": "#e2e8f0",
+      "mutedForeground": "#475569",
+      "accent": "#bbf7d0",
+      "accentForeground": "#052e16",
+      "border": "#cbd5e1",
+      "input": "#cbd5e1",
+      "ring": "#86efac",
+      "destructive": "#dc2626",
+      "destructiveForeground": "#ffffff"
+    },
+    "spacing": {
+      "page": "2em",
+      "surfacePadding": "2em",
+      "sectionGap": "24px",
+      "fieldGap": "12px",
+      "controlHeight": "40px"
+    },
+    "layout": {
+      "contentWidth": "full",
+      "header": "inline",
+      "alignment": "start"
+    }
+  },
+  "permissions": [
+    {
+      "id": "native:systemInfo",
+      "title": "Detectar sistema operacional",
+      "description": "Permite identificar Windows, macOS ou Linux para escolher o pacote correto."
+    },
+    {
+      "id": "native:runScript",
+      "title": "Executar instalador local",
+      "description": "Permite iniciar um script nativo que baixa e instala o LocalSend a partir do GitHub Releases."
+    }
+  ]
+}

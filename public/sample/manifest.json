@@ -1,0 +1,70 @@
+{
+  "name": "Wizard de exemplo",
+  "description": "Demonstra um wizard remoto rodando como script dentro do Client Wizard.",
+  "version": "0.1.0",
+  "terms": [
+    "./docs/terms.md"
+  ],
+  "license": [
+    "./docs/license.md"
+  ],
+  "privacy": [
+    "./docs/privacy.md"
+  ],
+  "entry": {
+    "type": "script",
+    "url": "./wizard.js"
+  },
+  "theme": {
+    "mode": "light",
+    "colors": {
+      "background": "#f8fafc",
+      "foreground": "#0f172a",
+      "primary": "#2563eb",
+      "primaryForeground": "#ffffff",
+      "secondary": "#e0f2fe",
+      "secondaryForeground": "#0f172a",
+      "muted": "#e2e8f0",
+      "mutedForeground": "#475569",
+      "accent": "#dbeafe",
+      "accentForeground": "#172554",
+      "border": "#cbd5e1",
+      "input": "#cbd5e1",
+      "ring": "#93c5fd",
+      "destructive": "#dc2626",
+      "destructiveForeground": "#ffffff"
+    },
+    "radius": {
+      "sm": "4px",
+      "md": "8px",
+      "lg": "12px",
+      "xl": "16px"
+    },
+    "font": {
+      "family": "Raleway Variable, sans-serif",
+      "headingFamily": "Raleway Variable, sans-serif",
+      "size": "16px",
+      "headingWeight": 600,
+      "bodyWeight": 400
+    },
+    "spacing": {
+      "page": "2em",
+      "surfacePadding": "2em",
+      "sectionGap": "24px",
+      "fieldGap": "12px",
+      "controlHeight": "40px"
+    },
+    "layout": {
+      "contentWidth": "full",
+      "header": "inline",
+      "alignment": "start"
+    }
+  },
+  "permissions": [
+    {
+      "id": "native:systemInfo",
+      "title": "Ler informacoes do sistema",
+      "description": "Permite consultar sistema operacional, arquitetura, CPU e memoria."
+    }
+  ]
+}
