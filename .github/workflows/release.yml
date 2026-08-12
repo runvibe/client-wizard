@@ -148,9 +148,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          mapfile -t release_assets < <(find release-assets -type f | sort)
+          if [ "${#release_assets[@]}" -eq 0 ]; then
+            echo "No release assets found in release-assets/" >&2
+            exit 1
+          fi
+
           release_args=(
             "$RELEASE_TAG"
-            release-assets/*
+            "${release_assets[@]}"
             --target "${GITHUB_SHA}"
             --title "$RELEASE_TAG"
             --generate-notes
@@ -160,4 +166,16 @@ jobs:
             release_args+=(--prerelease)
           fi
 
-          gh release create "${release_args[@]}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --target "${GITHUB_SHA}" \
+              --title "$RELEASE_TAG"
+
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              gh release edit "$RELEASE_TAG" --prerelease
+            fi
+
+            gh release upload "$RELEASE_TAG" "${release_assets[@]}" --clobber
+          else
+            gh release create "${release_args[@]}"
+          fi
