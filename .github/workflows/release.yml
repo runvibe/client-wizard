@@ -31,19 +31,36 @@ jobs:
             artifact-name: client-wizard-linux
             artifact-path: |
               src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/appimage/*.AppImage.sha256
               src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/deb/*.deb.sha256
           - platform: windows
             os: windows-latest
             bundles: nsis
             artifact-name: client-wizard-windows
             artifact-path: |
               src-tauri/target/release/bundle/nsis/*.exe
-          - platform: macos
+              src-tauri/target/release/bundle/nsis/*.exe.sha256
+          - platform: macos-aarch64
             os: macos-latest
             bundles: dmg
-            artifact-name: client-wizard-macos
+            artifact-name: client-wizard-macos-aarch64
             artifact-path: |
               src-tauri/target/release/bundle/dmg/*.dmg
+              src-tauri/target/release/bundle/dmg/*.dmg.sha256
+              src-tauri/target/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/release/bundle/macos/*.app.tar.gz.sha256
+              src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          - platform: macos-x64
+            os: macos-13
+            bundles: dmg
+            artifact-name: client-wizard-macos-x64
+            artifact-path: |
+              src-tauri/target/release/bundle/dmg/*.dmg
+              src-tauri/target/release/bundle/dmg/*.dmg.sha256
+              src-tauri/target/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/release/bundle/macos/*.app.tar.gz.sha256
+              src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
 
     steps:
       - name: Checkout
@@ -131,6 +148,33 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           args: --bundles ${{ matrix.bundles }}
+
+      - name: Generate artifact checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          artifacts=(
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+          )
+
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No artifacts found to checksum." >&2
+            exit 1
+          fi
+
+          for artifact in "${artifacts[@]}"; do
+            if command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$artifact" | awk '{ print $1 }' > "${artifact}.sha256"
+            else
+              sha256sum "$artifact" | awk '{ print $1 }' > "${artifact}.sha256"
+            fi
+          done
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4

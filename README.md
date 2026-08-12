@@ -29,6 +29,26 @@ npm run build
 npm run tauri dev
 ```
 
+## Instalacao macOS via terminal
+
+Sem assinatura/notarizacao Apple, o DMG pode ser bloqueado pelo Gatekeeper como app nao verificado. Para instalar em Macs de teste, use o instalador via terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+```
+
+Para instalar uma versao especifica:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+O script baixa o asset `.app.tar.gz` da release, valida o `.sha256`, instala em `~/Applications`, aplica assinatura ad-hoc local e remove quarantine quando necessario. Para instalar em outro destino:
+
+```bash
+CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+```
+
 ## Dependencias Linux/WSL
 
 No Linux, o Tauri compila contra WebKitGTK/JavaScriptCore do sistema. Se aparecer erro como `Package javascriptcoregtk-4.1 was not found`, instale os pacotes nativos:
