@@ -91,12 +91,28 @@ jobs:
           set -euo pipefail
           node <<'NODE'
           const fs = require("fs");
-          const releaseVersion = process.env.RELEASE_VERSION;
-          const bundleVersion = releaseVersion.replace(/^v/i, "");
+          const releaseVersion = process.env.RELEASE_VERSION.trim();
+          const versionMatch = releaseVersion.match(/^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/);
 
-          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(bundleVersion)) {
+          if (!versionMatch) {
             throw new Error(`Release version must be semver, optionally prefixed with v. Received: ${releaseVersion}`);
           }
+
+          const [, major, minor, patch, prerelease = "", build = ""] = versionMatch;
+          const prereleaseIdentifiers = prerelease ? prerelease.slice(1).split(".") : [];
+          if (
+            prereleaseIdentifiers.some((identifier) =>
+              identifier === "" || (/^[0-9]+$/.test(identifier) && identifier.length > 1 && identifier.startsWith("0"))
+            )
+          ) {
+            throw new Error(`Release version has an invalid semver prerelease identifier: ${releaseVersion}`);
+          }
+
+          const bundleVersion = [
+            String(Number(major)),
+            String(Number(minor)),
+            String(Number(patch)),
+          ].join(".") + prerelease + build;
 
           for (const file of ["package.json", "src-tauri/tauri.conf.json"]) {
             const json = JSON.parse(fs.readFileSync(file, "utf8"));
