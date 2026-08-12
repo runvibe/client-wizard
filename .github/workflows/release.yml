@@ -51,9 +51,8 @@ jobs:
             artifact-path: |
               src-tauri/target/release/bundle/dmg/*.dmg
               src-tauri/target/release/bundle/dmg/*.dmg.sha256
-              src-tauri/target/release/bundle/macos/*.app.tar.gz
-              src-tauri/target/release/bundle/macos/*.app.tar.gz.sha256
-              src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+              src-tauri/target/release/bundle/macos/Client.Wizard_*_aarch64.app.tar.gz
+              src-tauri/target/release/bundle/macos/Client.Wizard_*_aarch64.app.tar.gz.sha256
           - platform: macos-x64
             os: macos-latest
             build-args: --target x86_64-apple-darwin --bundles app,dmg
@@ -62,9 +61,8 @@ jobs:
             artifact-path: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg.sha256
-              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
-              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sha256
-              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Client.Wizard_*_x64.app.tar.gz
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Client.Wizard_*_x64.app.tar.gz.sha256
 
     steps:
       - name: Checkout
