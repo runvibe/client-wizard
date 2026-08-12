@@ -45,7 +45,7 @@ jobs:
               src-tauri/target/release/bundle/nsis/*.exe.sha256
           - platform: macos-aarch64
             os: macos-latest
-            build-args: --bundles dmg
+            build-args: --bundles app,dmg
             cargo-extra-args: ""
             artifact-name: client-wizard-macos-aarch64
             artifact-path: |
@@ -56,7 +56,7 @@ jobs:
               src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           - platform: macos-x64
             os: macos-latest
-            build-args: --target x86_64-apple-darwin --bundles dmg
+            build-args: --target x86_64-apple-darwin --bundles app,dmg
             cargo-extra-args: --target x86_64-apple-darwin
             artifact-name: client-wizard-macos-x64
             artifact-path: |
@@ -162,6 +162,39 @@ jobs:
         with:
           args: ${{ matrix.build-args }}
           retryAttempts: 2
+
+      - name: Package macOS app archive
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_version="$(node -p "require('./package.json').version")"
+          case "${{ matrix.platform }}" in
+            macos-aarch64) release_arch="aarch64" ;;
+            macos-x64) release_arch="x64" ;;
+            *)
+              echo "Unsupported macOS platform: ${{ matrix.platform }}" >&2
+              exit 1
+              ;;
+          esac
+
+          macos_bundle_dir="$(find src-tauri/target -type d -path '*/release/bundle/macos' | sort | head -n 1)"
+          if [ -z "$macos_bundle_dir" ]; then
+            echo "No macOS bundle directory found." >&2
+            find src-tauri/target -maxdepth 5 -type d | sort >&2
+            exit 1
+          fi
+
+          app_bundle="$(find "$macos_bundle_dir" -maxdepth 1 -type d -name '*.app' | sort | head -n 1)"
+          if [ -z "$app_bundle" ]; then
+            echo "No .app bundle found in $macos_bundle_dir." >&2
+            ls -la "$macos_bundle_dir" >&2
+            exit 1
+          fi
+
+          target_archive="$macos_bundle_dir/Client.Wizard_${bundle_version}_${release_arch}.app.tar.gz"
+          tar -C "$macos_bundle_dir" -czf "$target_archive" "$(basename "$app_bundle")"
 
       - name: Generate artifact checksums
         shell: bash
