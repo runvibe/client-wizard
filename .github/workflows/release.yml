@@ -100,6 +100,11 @@ jobs:
         if: matrix.platform == 'macos-x64'
         run: rustup target add x86_64-apple-darwin
 
+      - name: Install Windows NSIS
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
@@ -156,6 +161,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           args: ${{ matrix.build-args }}
+          retryAttempts: 2
 
       - name: Generate artifact checksums
         shell: bash
@@ -163,7 +169,10 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          mapfile -t artifacts < <(
+          artifacts=()
+          while IFS= read -r artifact; do
+            artifacts+=("$artifact")
+          done < <(
             find src-tauri/target -type f \
               \( -name "*.AppImage" \
                 -o -name "*.deb" \
