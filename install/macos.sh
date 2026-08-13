@@ -42,6 +42,31 @@ patch_macos_plist() {
   fi
 }
 
+select_macos_asset_url() {
+  local release_json="$1"
+  local asset_arch="$2"
+
+  printf '%s' "$release_json" |
+    tr '{' '\n' |
+    awk -v arch="$asset_arch" '
+      /browser_download_url/ && /\.app\.tar\.gz"/ && $0 ~ arch {
+        match($0, /"browser_download_url": *"[^"]+"/)
+        if (RSTART) {
+          value = substr($0, RSTART, RLENGTH)
+          sub(/^"browser_download_url": *"/, "", value)
+          sub(/"$/, "", value)
+          print value
+          found = 1
+        }
+      }
+      END {
+        if (!found) {
+          exit 1
+        }
+      }
+    '
+}
+
 if [ "${CLIENT_WIZARD_TESTING:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -85,22 +110,7 @@ if [ -z "$TAG" ]; then
   exit 1
 fi
 
-ASSET_URL="$(
-  printf '%s' "$RELEASE_JSON" |
-    tr '{' '\n' |
-    awk -v arch="$ASSET_ARCH" '
-      /browser_download_url/ && /\.app\.tar\.gz"/ && $0 ~ arch {
-        match($0, /"browser_download_url": *"[^"]+"/)
-        if (RSTART) {
-          value = substr($0, RSTART, RLENGTH)
-          sub(/^"browser_download_url": *"/, "", value)
-          sub(/"$/, "", value)
-          print value
-          exit
-        }
-      }
-    '
-)"
+ASSET_URL="$(select_macos_asset_url "$RELEASE_JSON" "$ASSET_ARCH" || true)"
 
 if [ -z "$ASSET_URL" ]; then
   echo "Could not find a macOS .app.tar.gz asset for architecture $ASSET_ARCH in release $TAG." >&2

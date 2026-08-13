@@ -54,3 +54,25 @@ patch_macos_plist "$app_dir"
 assert_contains "$plist" "<key>CFBundleName</key>"
 assert_contains "$plist" "<key>NSHighResolutionCapable</key>"
 assert_not_contains "$plist" "<key>LSRequiresCarbon</key>"
+
+release_json="$tmp_dir/release.json"
+cat > "$release_json" <<'JSON'
+{
+  "tag_name": "2026.08.0",
+  "assets": [
+    {
+      "name": "Client.Wizard_2026.8.0_aarch64.app.tar.gz",
+      "browser_download_url": "https://example.invalid/Client.Wizard_2026.8.0_aarch64.app.tar.gz"
+    },
+    {
+      "name": "Client.Wizard_2026.8.0_aarch64.app.tar.gz.sha256",
+      "browser_download_url": "https://example.invalid/Client.Wizard_2026.8.0_aarch64.app.tar.gz.sha256"
+    }
+  ]
+}
+JSON
+
+asset_url="$(select_macos_asset_url "$(cat "$release_json")" "aarch64")"
+if [ "$asset_url" != "https://example.invalid/Client.Wizard_2026.8.0_aarch64.app.tar.gz" ]; then
+  fail "Unexpected asset URL: $asset_url"
+fi
