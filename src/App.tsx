@@ -324,7 +324,7 @@ export function App() {
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(selected.content);
+      parsed = JSON.parse(stripUtf8Bom(selected.content));
     } catch (caughtError) {
       throw new Error(`Manifesto local nao contem JSON valido: ${errorMessage(caughtError)}`);
     }
@@ -2366,6 +2366,10 @@ function normalizeAllowedUrl(value: string, label: string) {
     throw new Error(`A URL do ${label} deve usar HTTPS.`);
   }
   return url.toString();
+}
+
+function stripUtf8Bom(value: string) {
+  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
 }
 
 function isAbsoluteRemoteUrl(value: string) {
