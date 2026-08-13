@@ -147,13 +147,19 @@ Esse wizard identifica o sistema, consulta o ultimo release publico de `ventoy/V
 
 ## Exemplo de manifesto com ZIP
 
-Para testar um manifesto cujo artefato e um pacote ZIP, carregue:
+Para testar no app instalado, carregue a URL HTTPS do manifesto publicado no proprio repositorio:
+
+```text
+https://raw.githubusercontent.com/runvibe/client-wizard/main/public/tests/zip-basic/manifest.json
+```
+
+Para testar durante `npm run tauri dev`, tambem funciona a URL local:
 
 ```text
 http://127.0.0.1:1420/tests/zip-basic/manifest.json
 ```
 
-Esse manifesto aponta para `public\tests\zip-basic\package.zip`. O app baixa o ZIP apos o consentimento, extrai `wizard.js` em memoria usando o campo `entry.script` e executa esse script como orquestrador do wizard.
+Esse manifesto aponta para `package.zip` no mesmo diretorio do manifesto. O app baixa o ZIP apos o consentimento, extrai `wizard.js` em memoria usando o campo `entry.script` e executa esse script como orquestrador do wizard.
 
 ## Exemplo de manifesto
 
