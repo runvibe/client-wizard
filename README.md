@@ -37,17 +37,51 @@ Sem assinatura/notarizacao Apple, o DMG pode ser bloqueado pelo Gatekeeper como 
 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
 ```
 
-Para instalar uma versao especifica:
+### CLI do instalador macOS
+
+O script `install/macos.sh` e o CLI de instalacao para macOS. Ele aceita a versao/tag como primeiro argumento posicional; quando omitida, usa a ultima release publicada:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
 ```
 
-O script baixa o asset `.app.tar.gz` da release, valida o `.sha256`, instala em `~/Applications`, aplica assinatura ad-hoc local e remove quarantine quando necessario. Para instalar em outro destino:
+Para baixar o script antes de executar e ver o log detalhado:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh -o /tmp/client-wizard-install.sh
+bash -x /tmp/client-wizard-install.sh 2026.08.0
+```
+
+O script baixa o asset `.app.tar.gz` da release de acordo com a arquitetura do Mac (`arm64` -> `aarch64`, `x86_64` -> `x64`), valida o `.sha256`, instala em `~/Applications`, remove a chave legada `LSRequiresCarbon` do `Info.plist`, aplica assinatura ad-hoc local, remove quarantine quando necessario e abre o app ao final.
+
+Variaveis suportadas:
+
+| Variavel | Padrao | Uso |
+|---|---|---|
+| `CLIENT_WIZARD_REPO` | `runvibe/client-wizard` | Repositorio GitHub de onde buscar releases. |
+| `CLIENT_WIZARD_VERSION` | primeiro argumento ou `latest` | Tag da release a instalar. |
+| `CLIENT_WIZARD_INSTALL_DIR` | `$HOME/Applications` | Diretorio onde o `.app` sera instalado. |
+| `CLIENT_WIZARD_OPEN` | `1` | Use `0` para instalar sem abrir o app no final. |
+
+Exemplos:
 
 ```bash
 CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
 ```
+
+```bash
+CLIENT_WIZARD_OPEN=0 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+### CLI do app
+
+Depois de instalado, o app tambem aceita inicializacao por manifesto pela linha de comando:
+
+```bash
+open "$HOME/Applications/Client Wizard.app" --args --manifest "https://wizard.example.com/manifest.json"
+```
+
+Esse modo e equivalente ao deep link `client-wizard://open?manifest=...`: ele preenche o manifesto e inicia o fluxo normal de consentimento.
 
 ## Dependencias Linux/WSL
 

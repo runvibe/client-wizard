@@ -134,6 +134,70 @@ client-wizard --manifest https://wizard.example.com/manifest.json
 
 O comportamento de `--manifest` deve ser equivalente ao deep link.
 
+### 2.5.2 CLI de instalacao macOS
+
+Para distribuicao macOS sem Developer ID/notarizacao, o projeto mantem um instalador shell em `install/macos.sh`. Ele e o CLI de instalacao recomendado para Macs de teste e deve ser executado via `curl | bash` ou baixado antes para diagnostico.
+
+Instalar a ultima release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+```
+
+Instalar uma release especifica:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+Executar com log detalhado:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh -o /tmp/client-wizard-install.sh
+bash -x /tmp/client-wizard-install.sh 2026.08.0
+```
+
+Comportamento:
+
+- Exige macOS (`uname -s == Darwin`).
+- Detecta arquitetura local: `arm64` usa asset `aarch64`; `x86_64` usa asset `x64`.
+- Consulta a GitHub Release em `CLIENT_WIZARD_REPO`, por `CLIENT_WIZARD_VERSION`, argumento posicional ou `latest`.
+- Seleciona o asset `.app.tar.gz` da arquitetura detectada.
+- Baixa o `.app.tar.gz` e o `.sha256` correspondente.
+- Valida o checksum antes de instalar.
+- Instala o app em `CLIENT_WIZARD_INSTALL_DIR` ou `$HOME/Applications`.
+- Remove `LSRequiresCarbon` do `Contents/Info.plist`, porque essa chave legada pode impedir abertura em macOS moderno.
+- Aplica assinatura local ad-hoc com `codesign --force --deep --sign -`.
+- Remove `com.apple.quarantine` quando presente.
+- Abre o app no final quando `CLIENT_WIZARD_OPEN` nao for `0`.
+
+Variaveis suportadas:
+
+| Variavel | Padrao | Uso |
+|---|---|---|
+| `CLIENT_WIZARD_REPO` | `runvibe/client-wizard` | Repositorio GitHub de onde buscar releases. |
+| `CLIENT_WIZARD_VERSION` | primeiro argumento ou `latest` | Tag da release a instalar. |
+| `CLIENT_WIZARD_INSTALL_DIR` | `$HOME/Applications` | Diretorio onde o `.app` sera instalado. |
+| `CLIENT_WIZARD_OPEN` | `1` | Use `0` para instalar sem abrir o app no final. |
+
+Exemplos:
+
+```bash
+CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+```
+
+```bash
+CLIENT_WIZARD_OPEN=0 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+Depois de instalado, o CLI do app pode ser usado para abrir o Client Wizard com um manifesto:
+
+```bash
+open "$HOME/Applications/Client Wizard.app" --args --manifest "https://wizard.example.com/manifest.json"
+```
+
+Esse comando nao pula consentimentos. Ele apenas define a URL inicial do manifesto e o app segue o mesmo fluxo de termos, licencas, privacidade e permissoes.
+
 #### Registro por plataforma
 
 O registro do protocolo deve ser configurado no bundle/instalador do app:
