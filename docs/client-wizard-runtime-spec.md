@@ -1069,7 +1069,6 @@ type WizardNavigationEvent = {
     id?: string;
     markdown: string;
   };
-  storage: Record<string, unknown>; // snapshot of the surface storage after navigation
 };
 ```
 
@@ -1091,11 +1090,6 @@ Comportamento para links normais:
 - URLs completas `http://` ou `https://` devem abrir no navegador padrao do usuario;
 - links locais para arquivos `.md` devem ser carregados e renderizados como Markdown pelo host;
 - outros formatos locais devem ser ignorados ou bloqueados ate haver uma regra explicita.
-
-Comportamento para links dinamicos (evento `link`):
-
-- O host decodifica o `href`. Se o valor resultante for um JSON object (começa com `{`), o host tenta parsear esse JSON e envia o objeto resultante como payload do evento. Caso contrario, o evento recebe um payload com a forma `{ href: string }`.
-- Em resumo, o handler recebe o "parsed Markdown target payload": normalmente `{ href }`, ou um objeto JSON quando o target codifica um objeto de comando/parametros.
 
 Exemplo de link dinamico:
 
@@ -1154,9 +1148,9 @@ type ClientWizardRequestType =
 | `screen.openDialog(dialog)` | `surface.dialog.open` | `{ dialog }` | `DialogResult` |
 | `useWizard(wizard)` | `wizard.create` | `{ surfaceId, wizard }` | `{ surfaceId }` |
 | `wizard.update(wizard)` | `wizard.update` | `{ wizard }` | `{ ok: true }` |
-| `wizard.next()` | `wizard.next` | `{}` | `{ index, step, storage }` |
-| `wizard.prev()` | `wizard.prev` | `{}` | `{ index, step, storage }` |
-| `wizard.goTo(step)` | `wizard.goTo` | `{ step }` | `{ index, step, storage }` |
+| `wizard.next()` | `wizard.next` | `{}` | `{ index, step }` |
+| `wizard.prev()` | `wizard.prev` | `{}` | `{ index, step }` |
+| `wizard.goTo(step)` | `wizard.goTo` | `{ step }` | `{ index, step }` |
 | `wizard.openDialog(dialog)` | `surface.dialog.open` | `{ dialog }` | `DialogResult` |
 | `clientWizard.invoke(command)` | `native.invoke` | `{ command }` | `ExecutorResult` |
 
