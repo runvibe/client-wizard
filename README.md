@@ -1,27 +1,92 @@
 # Client Wizard
 
-Aplicacao desktop com Tauri + Rust e frontend React/shadcn para executar scripts de wizard remotos e renderizar as telas localmente pelo host.
+Client Wizard is a cross-platform desktop runtime for building secure, manifest-driven setup assistants, installers, diagnostics, and guided automation flows.
 
-## Fluxo implementado
+Instead of rendering arbitrary remote HTML, Client Wizard downloads a trusted `manifest.json`, asks the user to review terms and permissions, then runs a remote `wizard.js` orchestrator inside an isolated worker. The visible UI is rendered locally by the Tauri/React host, and native operations are routed through a controlled Rust bridge.
 
-1. A tela inicial pede a URL de um `manifest.json`.
-2. O app baixa somente o manifesto e exibe nome, descricao, termos de uso e permissoes.
-3. O usuario precisa aceitar o termo e marcar cada permissao individualmente.
-4. Somente depois disso o app baixa o artefato `script` ou `zip`.
-5. O script roda em um Web Worker com `clientWizard.useMarkdown()`, `clientWizard.useWizard()` e `clientWizard.invoke()`.
-6. As telas sao renderizadas localmente em React/shadcn; nenhum HTML remoto visivel e carregado.
+## What Client Wizard does
 
-## Frontend
+- Loads a HTTPS `manifest.json` that describes the wizard, documents, permissions, theme, and script entry point.
+- Presents terms, license, privacy, and permission consent before downloading executable wizard artifacts.
+- Executes `wizard.js` in a Web Worker with the `clientWizard` SDK.
+- Renders Markdown and wizard steps locally with React/shadcn components.
+- Exposes controlled native capabilities such as system information, process listing, scripts, downloads, archive extraction, and scoped file-system operations.
+- Supports direct script entries and ZIP packages containing `wizard.js`.
 
-O frontend foi migrado para React + Vite e inicializado com:
+## How it works
+
+1. The user enters a manifest URL or opens the app with `--manifest`.
+2. The app downloads and validates only the manifest.
+3. The app downloads declared consent documents and shows them to the user.
+4. The user accepts required documents and permissions.
+5. The app downloads the declared script or ZIP package.
+6. The host injects `clientWizard` into an isolated worker.
+7. `wizard.js` creates screens with `useMarkdown()` or `useWizard()`.
+8. Native operations go through permission-checked host APIs.
+
+## Installation
+
+### macOS terminal installer
+
+The macOS terminal installer is the currently supported installation path for test Macs and non-notarized releases.
+
+Install the latest release:
 
 ```bash
-npx shadcn@latest init --preset b1aIuQ2XC --template vite
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
 ```
 
-O preset gerou `components.json`, componentes em `src\components\ui\*` e `src\lib\utils.ts`. A UI principal fica em `src\App.tsx`, usando a ponte Tauri/Rust somente para comandos nativos autorizados.
+Install a specific release tag:
 
-## Comandos
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+Download the installer first and run it with shell tracing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh -o /tmp/client-wizard-install.sh
+bash -x /tmp/client-wizard-install.sh 2026.08.0
+```
+
+Supported installer variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLIENT_WIZARD_REPO` | `runvibe/client-wizard` | GitHub repository used to resolve releases. |
+| `CLIENT_WIZARD_VERSION` | first argument or `latest` | Release tag to install. |
+| `CLIENT_WIZARD_INSTALL_DIR` | `$HOME/Applications` | Destination directory for `Client Wizard.app`. |
+| `CLIENT_WIZARD_OPEN` | `1` | Set to `0` to install without opening the app. |
+
+Install into `/Applications`:
+
+```bash
+CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+```
+
+Install without opening the app:
+
+```bash
+CLIENT_WIZARD_OPEN=0 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+```
+
+Open the installed app with a manifest:
+
+```bash
+open "$HOME/Applications/Client Wizard.app" --args --manifest "https://wizard.example.com/manifest.json"
+```
+
+The installer downloads the architecture-specific `.app.tar.gz`, verifies the `.sha256`, installs `Client Wizard.app`, removes the legacy `LSRequiresCarbon` plist key, applies an ad-hoc local signature, removes quarantine when present, and opens the app unless disabled.
+
+### Windows
+
+Windows packaging is expected to use release assets such as `.msi`, `.exe`, or a Windows-specific archive. A dedicated Windows installer command is not finalized in this repository yet.
+
+### Linux
+
+Linux packaging is expected to use release assets such as `.deb`, `.rpm`, `.AppImage`, or a generic `.tar.gz`. A dedicated Linux installer command is not finalized in this repository yet.
+
+## Run from source
 
 ```bash
 npm install
@@ -29,65 +94,9 @@ npm run build
 npm run tauri dev
 ```
 
-## Instalacao macOS via terminal
+### Linux native dependencies
 
-Sem assinatura/notarizacao Apple, o DMG pode ser bloqueado pelo Gatekeeper como app nao verificado. Para instalar em Macs de teste, use o instalador via terminal:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
-```
-
-### CLI do instalador macOS
-
-O script `install/macos.sh` e o CLI de instalacao para macOS. Ele aceita a versao/tag como primeiro argumento posicional; quando omitida, usa a ultima release publicada:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
-```
-
-Para baixar o script antes de executar e ver o log detalhado:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh -o /tmp/client-wizard-install.sh
-bash -x /tmp/client-wizard-install.sh 2026.08.0
-```
-
-O script baixa o asset `.app.tar.gz` da release de acordo com a arquitetura do Mac (`arm64` -> `aarch64`, `x86_64` -> `x64`), valida o `.sha256`, instala em `~/Applications`, remove a chave legada `LSRequiresCarbon` do `Info.plist`, aplica assinatura ad-hoc local, remove quarantine quando necessario e abre o app ao final.
-
-Variaveis suportadas:
-
-| Variavel | Padrao | Uso |
-|---|---|---|
-| `CLIENT_WIZARD_REPO` | `runvibe/client-wizard` | Repositorio GitHub de onde buscar releases. |
-| `CLIENT_WIZARD_VERSION` | primeiro argumento ou `latest` | Tag da release a instalar. |
-| `CLIENT_WIZARD_INSTALL_DIR` | `$HOME/Applications` | Diretorio onde o `.app` sera instalado. |
-| `CLIENT_WIZARD_OPEN` | `1` | Use `0` para instalar sem abrir o app no final. |
-
-Exemplos:
-
-```bash
-CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
-```
-
-```bash
-CLIENT_WIZARD_OPEN=0 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
-```
-
-### CLI do app
-
-Depois de instalado, o app tambem aceita inicializacao por manifesto pela linha de comando:
-
-```bash
-open "$HOME/Applications/Client Wizard.app" --args --manifest "https://wizard.example.com/manifest.json"
-```
-
-Esse modo e equivalente ao deep link `client-wizard://open?manifest=...`: ele preenche o manifesto e inicia o fluxo normal de consentimento.
-
-## Dependencias Linux/WSL
-
-No Linux, o Tauri compila contra WebKitGTK/JavaScriptCore do sistema. Se aparecer erro como `Package javascriptcoregtk-4.1 was not found`, instale os pacotes nativos:
-
-### Ubuntu/Debian
+Tauri on Linux requires WebKitGTK and JavaScriptCore development packages. On Ubuntu/Debian:
 
 ```bash
 sudo apt update
@@ -105,7 +114,7 @@ sudo apt install -y \
   libjavascriptcoregtk-4.1-dev
 ```
 
-### Arch Linux
+On Arch Linux:
 
 ```bash
 sudo pacman -S --needed \
@@ -117,75 +126,57 @@ sudo pacman -S --needed \
   librsvg
 ```
 
-Depois rode novamente:
+In WSL, use WSLg to display the Tauri window. Build Windows binaries outside WSL with the Windows toolchain.
 
-```bash
-npm run tauri dev
-```
+## Examples
 
-Em WSL, use WSLg para abrir a janela do app. Para gerar binarios Windows, compile fora do WSL usando o toolchain Windows.
+### Local sample manifest
 
-## Exemplo local
-
-Com `npm run tauri dev`, carregue este manifesto na tela inicial:
+When running `npm run tauri dev`, load:
 
 ```text
 http://127.0.0.1:1420/sample/manifest.json
 ```
 
-Ele aponta para `public\sample\wizard.js`, que cria um wizard via `clientWizard.useWizard()` e chama `clientWizard.invoke({ type: "systemInfo" })` apos a permissao `native:systemInfo` ser aprovada.
+### Public HTTPS ZIP manifest
 
-## Teste de pacote Ventoy
-
-Para testar um fluxo mais completo, carregue:
-
-```text
-http://127.0.0.1:1420/tests/ventoy/manifest.json
-```
-
-Esse wizard identifica o sistema, consulta o ultimo release publico de `ventoy/Ventoy` no GitHub, escolhe o pacote compactado adequado (`windows.zip` ou `linux.tar.gz`) e solicita confirmacao antes de baixar e descompactar em uma pasta local de teste. Ele nao instala o Ventoy em disco/USB.
-
-## Exemplo de manifesto com ZIP
-
-Para testar no app instalado, carregue a URL HTTPS do manifesto publicado no proprio repositorio:
+When using an installed app, use the HTTPS manifest hosted in this repository:
 
 ```text
 https://raw.githubusercontent.com/runvibe/client-wizard/main/public/tests/zip-basic/manifest.json
 ```
 
-Para testar durante `npm run tauri dev`, tambem funciona a URL local:
+That manifest points to `package.zip` in the same directory. The app downloads the ZIP after consent, extracts `wizard.js` in memory, and runs it as the wizard orchestrator.
+
+### Ventoy package test
+
+During local development, load:
 
 ```text
-http://127.0.0.1:1420/tests/zip-basic/manifest.json
+http://127.0.0.1:1420/tests/ventoy/manifest.json
 ```
 
-Esse manifesto aponta para `package.zip` no mesmo diretorio do manifesto. O app baixa o ZIP apos o consentimento, extrai `wizard.js` em memoria usando o campo `entry.script` e executa esse script como orquestrador do wizard.
+This flow detects the operating system, queries the latest public Ventoy release, selects a Windows ZIP or Linux tarball, asks for confirmation, downloads the archive, and extracts it into a local test directory. It does not install Ventoy onto a disk or USB device.
 
-## Exemplo de manifesto
+## Writing wizard.js scripts
 
-```json
-{
-  "name": "Meu Wizard",
-  "description": "Assistente remoto renderizado pelo host.",
-  "terms": {
-    "markdown": "# Termos\n\nLeia e aceite para continuar."
-  },
-  "entry": {
-    "type": "script",
-    "url": "https://example.com/wizard.js"
-  },
-  "permissions": [
-    {
-      "id": "native:systemInfo",
-      "title": "Ler informacoes do sistema",
-      "description": "Permite consultar dados basicos do sistema operacional."
-    }
-  ]
-}
-```
+See [Writing `wizard.js` scripts](docs/wizard-script-authoring.md) for the complete authoring guide, including manifest entries, `clientWizard` APIs, permissions, storage, native commands, file-system access, downloads, extraction, ZIP packaging, network behavior, and complete examples.
 
-## Proximo endurecimento recomendado
+## Security model
 
-- Expandir o parser Safe MDX para todos os componentes previstos na spec.
-- Persistir auditoria das execucoes.
-- Separar ambientes de desenvolvimento e producao na politica de origem.
+Client Wizard uses a default-deny model:
+
+- Manifest, document, script, and ZIP URLs must use HTTPS, except localhost development URLs.
+- The app downloads the script or ZIP only after consent.
+- Remote HTML is not displayed as the main UI surface.
+- `wizard.js` runs as an orchestrator in an isolated worker.
+- All visible screens are rendered by the local host.
+- Native operations require explicit manifest permissions.
+- Native downloads, extraction, file-system actions, and command execution are audited by the host.
+
+The worker may have standard web APIs such as `fetch()` available, but Client Wizard does not yet expose a first-class permission-gated `httpRequest` bridge. Treat direct network access from `wizard.js` as current web runtime behavior, not as the final audited network API.
+
+## Documentation
+
+- [Writing `wizard.js` scripts](docs/wizard-script-authoring.md)
+- [Runtime architecture specification](docs/client-wizard-runtime-spec.md)
