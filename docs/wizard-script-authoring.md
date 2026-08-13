@@ -150,6 +150,28 @@ const wizard = clientWizard.useWizard(
 );
 ```
 
+Options:
+
+| Option | Type | Description |
+|---|---|---|
+| `id` | `string` | Optional stable wizard surface ID. |
+| `currentStep` | `number` | Optional zero-based starting step index. Use to start the wizard on a non-zero step. |
+| `storage` | `object` | Initial storage for the surface. |
+
+Example (start on step index 1):
+
+```js
+const wizard = clientWizard.useWizard(
+  {
+    steps: [ /* ... */ ]
+  },
+  {
+    currentStep: 1,
+    storage: { status: "ready" }
+  }
+);
+```
+
 Wizard steps:
 
 | Field | Type | Description |
@@ -203,17 +225,37 @@ Handle methods:
 
 ## UI events
 
-Wizard navigation emits events to registered handlers. A common pattern is to start work when the user enters a specific step:
+Wizard surfaces emit UI notifications to registered handlers via `handle.events(callback)`. Each event is an object with `type` and `data` properties. The following event types are implemented by the host:
+
+| Event | Description | data payload |
+|---|---|---|
+| `next` | The user activated the Next button (or equivalent). | `{ index: number, id?: string }` — `index` is the zero-based destination step index; `id` is the optional step id when available. |
+| `prev` | The user activated the Previous button. | `{ index: number, id?: string }` — destination step after moving back. |
+| `goTo` | A navigation request to a specific step (user or script-driven). | `{ index?: number, id?: string, source?: "user" | "script" }` — contains the index or id of the requested step and the request source when available. |
+| `link` | A link inside rendered Markdown was activated. | `{ href: string, target?: string }` — decoded href and optional target. |
+
+Example usage:
 
 ```js
-wizard.events(async (event) => {
-  if (event.type !== "next" || event.data.index !== 1) {
-    return;
+wizard.events((event) => {
+  switch (event.type) {
+    case "next":
+      console.log("Next ->", event.data.index, event.data.id);
+      break;
+    case "prev":
+      console.log("Prev ->", event.data.index);
+      break;
+    case "goTo":
+      console.log("GoTo ->", event.data);
+      break;
+    case "link":
+      console.log("Link clicked ->", event.data.href);
+      break;
   }
-
-  await wizard.setStorage({ status: "working", progress: 25 });
 });
 ```
+
+Use events to trigger background work when the user arrives at a step, to intercept link clicks, or to coordinate wizard state with native operations.
 
 ## Storage and Markdown bindings
 
@@ -250,6 +292,24 @@ await wizard.setStorage({ status: "downloading", progress: 40 });
 ```
 
 The current renderer supports host-defined Markdown and allowlisted components. Do not depend on arbitrary MDX imports, custom remote components, global CSS, DOM mutation, or arbitrary JavaScript inside Markdown.
+
+### Allowlisted components
+
+The host provides a small set of allowlisted primitives you can use inside Markdown. These are rendered by the host and may read from and write to the surface storage via the `name` prop.
+
+- ProgressiveBar
+  - Usage: `<ProgressiveBar name="progress" />`
+  - Binds to a numeric storage path and renders progress.
+
+- WizardCheckbox
+  - Usage: `<WizardCheckbox name="agree" label="I accept the terms" default={false} />`
+  - Props:
+    - `name` (string) — Storage path the checkbox value is written to (boolean).
+    - `label` (string) — Visible label shown next to the checkbox.
+    - `default` (boolean) — Initial checked state when storage has no value.
+  - Behavior: toggling the checkbox updates `storage[name]` to `true`/`false`. Use `btnNextWhen` or script logic to gate progression on the checkbox state.
+
+
 
 ## Native commands with `clientWizard.invoke()`
 
