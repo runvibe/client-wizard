@@ -17,6 +17,7 @@ import { eventsToCsv, listAuditEvents, logAuditEvent, type AuditCategory, type A
 import {
   clearLocalManifestScope,
   confirmLocalManifestScope,
+  deactivateLocalManifestScope,
   downloadFile,
   errorMessage,
   executeNative,
@@ -372,10 +373,18 @@ export function App() {
       input: manifest.entry
     });
     try {
-      if (manifestSource?.kind === "local-file") {
-        await confirmLocalManifestScope(manifestSource.path);
+      const localManifestPath = manifestSource?.kind === "local-file" ? manifestSource.path : undefined;
+      if (localManifestPath) {
+        await confirmLocalManifestScope(localManifestPath);
       }
-      const script = await loadEntryScript(manifest.entry, manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl });
+      let script: string;
+      try {
+        script = await loadEntryScript(manifest.entry, manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl });
+      } finally {
+        if (localManifestPath) {
+          await deactivateLocalManifestScope();
+        }
+      }
       startWorker(script);
       setAppState("running");
       audit({

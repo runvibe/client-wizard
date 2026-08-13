@@ -369,6 +369,18 @@ async fn clear_local_manifest_scope(
 }
 
 #[tauri::command]
+async fn deactivate_local_manifest_scope(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+) -> Result<(), String> {
+    let mut current = selected_manifest
+        .current
+        .lock()
+        .map_err(|_| "Falha ao acessar o manifesto local selecionado.".to_string())?;
+    deactivate_selected_local_manifest_scope(&mut current);
+    Ok(())
+}
+
+#[tauri::command]
 async fn download_file(
     app: AppHandle,
     request: DownloadFileRequest,
@@ -1296,6 +1308,10 @@ fn clear_selected_local_manifest_scope(state: &mut SelectedLocalManifestStateInn
     state.active_base_dir = None;
 }
 
+fn deactivate_selected_local_manifest_scope(state: &mut SelectedLocalManifestStateInner) {
+    state.active_base_dir = None;
+}
+
 fn activate_selected_local_manifest_scope(
     state: &mut SelectedLocalManifestStateInner,
     manifest_path: &Path,
@@ -1314,8 +1330,6 @@ fn activate_selected_local_manifest_scope(
         .pending_base_dir
         .clone()
         .ok_or_else(|| "Nenhuma pasta local pendente para confirmacao.".to_string())?;
-    state.pending_manifest_path = None;
-    state.pending_base_dir = None;
     state.active_base_dir = Some(pending_base_dir);
     Ok(())
 }
@@ -1592,6 +1606,7 @@ pub fn run() {
             read_local_consent_document,
             confirm_local_manifest_scope,
             clear_local_manifest_scope,
+            deactivate_local_manifest_scope,
             show_native_menu
         ])
         .run(tauri::generate_context!())
@@ -1870,8 +1885,29 @@ mod local_manifest_tests {
             .expect("activate scope");
 
         assert_eq!(state.active_base_dir, Some(canonical_base));
-        assert!(state.pending_manifest_path.is_none());
-        assert!(state.pending_base_dir.is_none());
+        assert_eq!(state.pending_manifest_path, Some(canonical_manifest));
+        assert_eq!(state.pending_base_dir, state.active_base_dir);
+    }
+
+    #[test]
+    fn deactivate_selected_local_manifest_scope_removes_active_access_only() {
+        let dir = temp_dir("deactivate-scope");
+        let manifest = dir.join("manifest.json");
+        fs::write(&manifest, "{}").expect("write manifest");
+        let canonical_base =
+            canonicalize_local_manifest_base_dir(dir.as_path()).expect("canonical base");
+        let canonical_manifest = manifest.canonicalize().expect("canonical manifest");
+        let mut state = SelectedLocalManifestStateInner {
+            pending_manifest_path: Some(canonical_manifest.clone()),
+            pending_base_dir: Some(canonical_base.clone()),
+            active_base_dir: Some(canonical_base),
+        };
+
+        deactivate_selected_local_manifest_scope(&mut state);
+
+        assert!(state.active_base_dir.is_none());
+        assert_eq!(state.pending_manifest_path, Some(canonical_manifest));
+        assert!(state.pending_base_dir.is_some());
     }
 
     #[test]
