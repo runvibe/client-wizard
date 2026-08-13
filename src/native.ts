@@ -25,6 +25,11 @@ export type LocalManifestFile = {
   content: string;
 };
 
+export type LocalManifestReference = {
+  baseDir: string;
+  relativePath: string;
+};
+
 export type ExtractArchiveRequest = {
   archivePath: string;
   destinationName?: string;
@@ -81,12 +86,26 @@ export async function selectManifestFile(): Promise<LocalManifestFile | null> {
   return invoke<LocalManifestFile | null>("select_manifest_file");
 }
 
-export async function readLocalTextFile(path: string): Promise<string> {
-  return invoke<string>("read_local_text_file", { path });
+export async function confirmLocalManifestScope(manifestPath: string): Promise<void> {
+  return invoke<void>("confirm_local_manifest_scope", { manifestPath });
 }
 
-export async function readLocalBinaryFile(path: string): Promise<number[]> {
-  return invoke<number[]>("read_local_binary_file", { path });
+export async function clearLocalManifestScope(): Promise<void> {
+  return invoke<void>("clear_local_manifest_scope");
+}
+
+export async function readLocalTextFile(reference: LocalManifestReference): Promise<string> {
+  return invoke<string>("read_local_text_file", {
+    baseDir: reference.baseDir,
+    relativePath: reference.relativePath
+  });
+}
+
+export async function readLocalBinaryFile(reference: LocalManifestReference): Promise<number[]> {
+  return invoke<number[]>("read_local_binary_file", {
+    baseDir: reference.baseDir,
+    relativePath: reference.relativePath
+  });
 }
 
 export async function fsExecute<T = unknown>(request: FsExecuteRequest): Promise<T> {

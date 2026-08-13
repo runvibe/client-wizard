@@ -137,6 +137,18 @@ struct LaunchManifestState {
 }
 
 #[derive(Default)]
+struct SelectedLocalManifestState {
+    current: Mutex<SelectedLocalManifestStateInner>,
+}
+
+#[derive(Default)]
+struct SelectedLocalManifestStateInner {
+    pending_manifest_path: Option<PathBuf>,
+    pending_base_dir: Option<PathBuf>,
+    active_base_dir: Option<PathBuf>,
+}
+
+#[derive(Default)]
 struct LaunchManifestStateInner {
     payload: Option<LaunchManifestPayload>,
     error: Option<String>,
@@ -245,7 +257,10 @@ async fn download_package(
 }
 
 #[tauri::command]
-async fn select_manifest_file(app: AppHandle) -> Result<Option<LocalManifestFile>, String> {
+async fn select_manifest_file(
+    app: AppHandle,
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+) -> Result<Option<LocalManifestFile>, String> {
     let Some(file_path) = app
         .dialog()
         .file()
@@ -258,12 +273,20 @@ async fn select_manifest_file(app: AppHandle) -> Result<Option<LocalManifestFile
     let path = file_path
         .into_path()
         .map_err(|_| "O seletor retornou um caminho de arquivo invalido.".to_string())?;
-    let content = read_local_text_file_blocking(path.display().to_string())?;
+    let content = read_selected_manifest_text_file(&path)?;
     let base_dir = path
         .parent()
         .ok_or_else(|| "Manifesto local nao possui diretorio pai.".to_string())?
-        .display()
-        .to_string();
+        .to_path_buf();
+    let canonical_base_dir = canonicalize_local_manifest_base_dir(&base_dir)?;
+    let canonical_manifest_path = path
+        .canonicalize()
+        .map_err(|error| format!("Falha ao resolver manifesto local selecionado: {error}"))?;
+    if let Ok(mut current) = selected_manifest.current.lock() {
+        clear_selected_local_manifest_scope(&mut current);
+        current.pending_manifest_path = Some(canonical_manifest_path);
+        current.pending_base_dir = Some(canonical_base_dir);
+    }
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -272,7 +295,7 @@ async fn select_manifest_file(app: AppHandle) -> Result<Option<LocalManifestFile
 
     Ok(Some(LocalManifestFile {
         path: path.display().to_string(),
-        base_dir,
+        base_dir: base_dir.display().to_string(),
         display_name,
         content,
     }))
@@ -292,13 +315,47 @@ async fn execute_native(command: NativeCommand) -> Result<ExecutorResult, String
 }
 
 #[tauri::command]
-async fn read_local_text_file(path: String) -> Result<String, String> {
-    read_local_text_file_blocking(path)
+async fn read_local_text_file(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+    base_dir: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let selected_base_dir = selected_local_manifest_base_dir(&selected_manifest)?;
+    read_local_text_file_blocking(&selected_base_dir, base_dir, relative_path)
 }
 
 #[tauri::command]
-async fn read_local_binary_file(path: String) -> Result<Vec<u8>, String> {
-    read_local_binary_file_blocking(path)
+async fn read_local_binary_file(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+    base_dir: String,
+    relative_path: String,
+) -> Result<Vec<u8>, String> {
+    let selected_base_dir = selected_local_manifest_base_dir(&selected_manifest)?;
+    read_local_binary_file_blocking(&selected_base_dir, base_dir, relative_path)
+}
+
+#[tauri::command]
+async fn confirm_local_manifest_scope(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+    manifest_path: String,
+) -> Result<(), String> {
+    let mut current = selected_manifest
+        .current
+        .lock()
+        .map_err(|_| "Falha ao acessar o manifesto local selecionado.".to_string())?;
+    activate_selected_local_manifest_scope(&mut current, Path::new(&manifest_path))
+}
+
+#[tauri::command]
+async fn clear_local_manifest_scope(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+) -> Result<(), String> {
+    let mut current = selected_manifest
+        .current
+        .lock()
+        .map_err(|_| "Falha ao acessar o manifesto local selecionado.".to_string())?;
+    clear_selected_local_manifest_scope(&mut current);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1189,17 +1246,137 @@ fn ensure_readable_file(path: &Path, max_bytes: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn read_local_text_file_blocking(path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    ensure_readable_file(&path, LOCAL_TEXT_FILE_LIMIT)?;
-    fs::read_to_string(&path)
+fn canonicalize_local_manifest_base_dir(base_dir: &Path) -> Result<PathBuf, String> {
+    let canonical_base_dir = base_dir
+        .canonicalize()
+        .map_err(|error| format!("Falha ao resolver pasta do manifesto local: {error}"))?;
+    if !canonical_base_dir.is_dir() {
+        return Err("Pasta do manifesto local invalida.".to_string());
+    }
+    Ok(canonical_base_dir)
+}
+
+fn selected_local_manifest_base_dir(
+    selected_manifest: &State<'_, SelectedLocalManifestState>,
+) -> Result<PathBuf, String> {
+    selected_manifest
+        .current
+        .lock()
+        .map_err(|_| "Falha ao acessar o manifesto local selecionado.".to_string())?
+        .active_base_dir
+        .clone()
+        .ok_or_else(|| "Nenhum manifesto local selecionado.".to_string())
+}
+
+fn clear_selected_local_manifest_scope(state: &mut SelectedLocalManifestStateInner) {
+    state.pending_manifest_path = None;
+    state.pending_base_dir = None;
+    state.active_base_dir = None;
+}
+
+fn activate_selected_local_manifest_scope(
+    state: &mut SelectedLocalManifestStateInner,
+    manifest_path: &Path,
+) -> Result<(), String> {
+    let canonical_manifest_path = manifest_path
+        .canonicalize()
+        .map_err(|error| format!("Falha ao resolver manifesto local selecionado: {error}"))?;
+    let pending_manifest_path = state
+        .pending_manifest_path
+        .as_ref()
+        .ok_or_else(|| "Nenhum manifesto local pendente para confirmacao.".to_string())?;
+    if *pending_manifest_path != canonical_manifest_path {
+        return Err("Manifesto local nao corresponde ao arquivo selecionado.".to_string());
+    }
+    let pending_base_dir = state
+        .pending_base_dir
+        .clone()
+        .ok_or_else(|| "Nenhuma pasta local pendente para confirmacao.".to_string())?;
+    state.pending_manifest_path = None;
+    state.pending_base_dir = None;
+    state.active_base_dir = Some(pending_base_dir);
+    Ok(())
+}
+
+fn resolve_local_manifest_reference(
+    selected_base_dir: &Path,
+    requested_base_dir: &str,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
+    let selected_base_dir = canonicalize_local_manifest_base_dir(selected_base_dir)?;
+    let requested_base_dir = canonicalize_local_manifest_base_dir(Path::new(requested_base_dir))?;
+    if requested_base_dir != selected_base_dir {
+        return Err("Pasta base nao corresponde ao manifesto local selecionado.".to_string());
+    }
+    let relative_path = sanitize_local_manifest_relative_path(relative_path)?;
+    let candidate = selected_base_dir.join(relative_path);
+    let canonical_candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("Arquivo local nao encontrado: {error}"))?;
+    if !canonical_candidate.starts_with(&selected_base_dir) {
+        return Err("Referencia local aponta para fora da pasta do manifesto.".to_string());
+    }
+
+    Ok(canonical_candidate)
+}
+
+fn sanitize_local_manifest_relative_path(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(format!("Referencia local absoluta nao permitida: {value}"));
+    }
+
+    let mut output = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(segment) => output.push(segment),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "Referencia local contem componente inseguro: {value}"
+                ))
+            }
+        }
+    }
+
+    if output.as_os_str().is_empty() {
+        return Err("Referencia local vazia nao permitida.".to_string());
+    }
+
+    Ok(output)
+}
+
+fn read_selected_manifest_text_file(path: &Path) -> Result<String, String> {
+    read_local_text_file_at_path(path)
+}
+
+fn read_local_text_file_at_path(path: &Path) -> Result<String, String> {
+    ensure_readable_file(path, LOCAL_TEXT_FILE_LIMIT)?;
+    fs::read_to_string(path)
         .map_err(|error| format!("Falha ao ler arquivo local como UTF-8: {error}"))
 }
 
-fn read_local_binary_file_blocking(path: String) -> Result<Vec<u8>, String> {
-    let path = PathBuf::from(path);
-    ensure_readable_file(&path, LOCAL_BINARY_FILE_LIMIT)?;
-    fs::read(&path).map_err(|error| format!("Falha ao ler arquivo local: {error}"))
+fn read_local_text_file_blocking(
+    selected_base_dir: &Path,
+    base_dir: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let path = resolve_local_manifest_reference(selected_base_dir, &base_dir, &relative_path)?;
+    read_local_text_file_at_path(&path)
+}
+
+fn read_local_binary_file_at_path(path: &Path) -> Result<Vec<u8>, String> {
+    ensure_readable_file(path, LOCAL_BINARY_FILE_LIMIT)?;
+    fs::read(path).map_err(|error| format!("Falha ao ler arquivo local: {error}"))
+}
+
+fn read_local_binary_file_blocking(
+    selected_base_dir: &Path,
+    base_dir: String,
+    relative_path: String,
+) -> Result<Vec<u8>, String> {
+    let path = resolve_local_manifest_reference(selected_base_dir, &base_dir, &relative_path)?;
+    read_local_binary_file_at_path(&path)
 }
 
 fn parse_manifest_launch_args(args: &[String]) -> Option<Result<LaunchManifestPayload, String>> {
@@ -1333,6 +1510,7 @@ fn configure_manifest_launch(app: &mut App) -> Result<(), Box<dyn std::error::Er
 pub fn run() {
     tauri::Builder::default()
         .manage(LaunchManifestState::default())
+        .manage(SelectedLocalManifestState::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(result) = parse_manifest_launch_args(&argv) {
                 apply_manifest_launch_result(app, result);
@@ -1367,6 +1545,8 @@ pub fn run() {
             open_markdown_document,
             read_local_text_file,
             read_local_binary_file,
+            confirm_local_manifest_scope,
+            clear_local_manifest_scope,
             show_native_menu
         ])
         .run(tauri::generate_context!())
@@ -1422,7 +1602,10 @@ fn open_about_window(app: &AppHandle, about_data: serde_json::Value) {
 #[cfg(test)]
 mod local_manifest_tests {
     use super::*;
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1440,10 +1623,32 @@ mod local_manifest_tests {
         let file = dir.join("manifest.json");
         fs::write(&file, [0xff, 0xfe, 0xfd]).expect("write invalid utf8");
 
-        let result = read_local_text_file_blocking(file.display().to_string());
+        let result = read_local_text_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "manifest.json".to_string(),
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("UTF-8"));
+    }
+
+    #[test]
+    fn read_local_text_file_within_base_dir_succeeds() {
+        let dir = temp_dir("scoped-text");
+        let docs = dir.join("docs");
+        fs::create_dir_all(&docs).expect("create docs");
+        let file = docs.join("terms.md");
+        fs::write(&file, "# Terms").expect("write terms");
+
+        let result = read_local_text_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "docs/terms.md".to_string(),
+        )
+        .expect("read text");
+
+        assert_eq!(result, "# Terms");
     }
 
     #[test]
@@ -1452,7 +1657,12 @@ mod local_manifest_tests {
         let file = dir.join("package.zip");
         fs::write(&file, [1_u8, 2, 3, 4]).expect("write binary");
 
-        let result = read_local_binary_file_blocking(file.display().to_string()).expect("read binary");
+        let result = read_local_binary_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "package.zip".to_string(),
+        )
+        .expect("read binary");
 
         assert_eq!(result, vec![1, 2, 3, 4]);
     }
@@ -1460,11 +1670,129 @@ mod local_manifest_tests {
     #[test]
     fn read_local_text_file_rejects_directories() {
         let dir = temp_dir("directory");
+        let file = dir.join("folder");
+        fs::create_dir_all(&file).expect("create directory");
 
-        let result = read_local_text_file_blocking(dir.display().to_string());
+        let result = read_local_text_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "folder".to_string(),
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Somente arquivos"));
+    }
+
+    #[test]
+    fn read_local_text_file_rejects_parent_traversal() {
+        let dir = temp_dir("traversal");
+        let outside = dir.parent().expect("parent").join("secret.txt");
+        fs::write(&outside, "secret").expect("write secret");
+
+        let result = read_local_text_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "../secret.txt".to_string(),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("inseguro"));
+    }
+
+    #[test]
+    fn read_local_text_file_rejects_absolute_paths() {
+        let dir = temp_dir("absolute");
+        let absolute = absolute_test_path();
+
+        let result =
+            read_local_text_file_blocking(dir.as_path(), dir.display().to_string(), absolute);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("absoluta"));
+    }
+
+    #[test]
+    fn read_local_text_file_rejects_missing_files() {
+        let dir = temp_dir("missing");
+
+        let result = read_local_text_file_blocking(
+            dir.as_path(),
+            dir.display().to_string(),
+            "missing.md".to_string(),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nao encontrado"));
+    }
+
+    #[test]
+    fn resolve_local_manifest_reference_rejects_mismatched_base_dir() {
+        let selected = temp_dir("selected-base");
+        let requested = temp_dir("requested-base");
+        let file = selected.join("terms.md");
+        fs::write(&file, "# Terms").expect("write terms");
+
+        let result = resolve_local_manifest_reference(
+            selected.as_path(),
+            &requested.display().to_string(),
+            "terms.md",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("selecionado"));
+    }
+
+    #[test]
+    fn activate_selected_local_manifest_scope_promotes_pending_selection() {
+        let dir = temp_dir("activate-scope");
+        let manifest = dir.join("manifest.json");
+        fs::write(&manifest, "{}").expect("write manifest");
+        let canonical_base =
+            canonicalize_local_manifest_base_dir(dir.as_path()).expect("canonical base");
+        let canonical_manifest = manifest.canonicalize().expect("canonical manifest");
+        let mut state = SelectedLocalManifestStateInner {
+            pending_manifest_path: Some(canonical_manifest.clone()),
+            pending_base_dir: Some(canonical_base.clone()),
+            active_base_dir: None,
+        };
+
+        activate_selected_local_manifest_scope(&mut state, manifest.as_path())
+            .expect("activate scope");
+
+        assert_eq!(state.active_base_dir, Some(canonical_base));
+        assert!(state.pending_manifest_path.is_none());
+        assert!(state.pending_base_dir.is_none());
+    }
+
+    #[test]
+    fn clear_selected_local_manifest_scope_removes_pending_and_active_access() {
+        let dir = temp_dir("clear-scope");
+        let manifest = dir.join("manifest.json");
+        fs::write(&manifest, "{}").expect("write manifest");
+        let canonical_base =
+            canonicalize_local_manifest_base_dir(dir.as_path()).expect("canonical base");
+        let canonical_manifest = manifest.canonicalize().expect("canonical manifest");
+        let mut state = SelectedLocalManifestStateInner {
+            pending_manifest_path: Some(canonical_manifest),
+            pending_base_dir: Some(canonical_base.clone()),
+            active_base_dir: Some(canonical_base),
+        };
+
+        clear_selected_local_manifest_scope(&mut state);
+
+        assert!(state.pending_manifest_path.is_none());
+        assert!(state.pending_base_dir.is_none());
+        assert!(state.active_base_dir.is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    fn absolute_test_path() -> String {
+        "C:\\Windows\\System32\\drivers\\etc\\hosts".to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn absolute_test_path() -> String {
+        "/etc/hosts".to_string()
     }
 }
 

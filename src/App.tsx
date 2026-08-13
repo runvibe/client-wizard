@@ -15,6 +15,8 @@ import { Progress, ProgressLabel } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { eventsToCsv, listAuditEvents, logAuditEvent, type AuditCategory, type AuditEvent, type AuditEventInput, type AuditLevel } from "./audit";
 import {
+  clearLocalManifestScope,
+  confirmLocalManifestScope,
   downloadFile,
   errorMessage,
   executeNative,
@@ -31,7 +33,8 @@ import {
   type FsExecuteRequest,
   type FsPath,
   type LaunchManifestPayload,
-  type LocalManifestFile
+  type LocalManifestFile,
+  type LocalManifestReference
 } from "./native";
 import type {
   ActiveSurface,
@@ -62,7 +65,7 @@ type ManifestSource =
 
 type ResolvedReference =
   | { kind: "remote-url"; url: string }
-  | { kind: "local-file"; path: string; display: string };
+  | ({ kind: "local-file"; display: string } & LocalManifestReference);
 
 type RuntimeMessage = {
   source: "client-wizard-script";
@@ -229,6 +232,7 @@ export function App() {
     try {
       await loader();
     } catch (caughtError) {
+      await clearLocalManifestScope();
       setError(errorMessage(caughtError));
       setAppState("idle");
       audit({
@@ -246,6 +250,7 @@ export function App() {
     setActiveSurface(undefined);
     stopWorker();
     setAppState("loading-manifest");
+    await clearLocalManifestScope();
     const url = normalizeAllowedUrl(inputUrl, "manifesto");
     const sourceData: ManifestSource = { kind: "remote-url", url, display: url };
     sessionIdRef.current = crypto.randomUUID();
@@ -293,6 +298,7 @@ export function App() {
     setActiveSurface(undefined);
     stopWorker();
     setAppState("loading-manifest");
+    await clearLocalManifestScope();
 
     const selected: LocalManifestFile | null = await selectManifestFile();
     if (!selected) {
@@ -324,6 +330,7 @@ export function App() {
     }
 
     const loadedManifest = validateManifest(parsed, source);
+    await confirmLocalManifestScope(selected.path);
     const loadedDocuments = await loadConsentDocuments(loadedManifest, source);
 
     setManifestSource(source);
@@ -702,8 +709,8 @@ export function App() {
         const markdown =
           reference.kind === "remote-url"
             ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`)
-            : await readLocalTextFile(reference.path);
-        const resolvedUrl = reference.kind === "remote-url" ? reference.url : reference.path;
+            : await readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
+        const resolvedUrl = reference.kind === "remote-url" ? reference.url : reference.display;
         setActiveSurface({
           id: crypto.randomUUID(),
           kind: "markdown",
@@ -1223,6 +1230,7 @@ export function App() {
       action: "app.reset",
       summary: "Voltando para tela inicial"
     });
+    void clearLocalManifestScope();
     beforeReset?.();
     setAppState("idle");
     setManifest(undefined);
@@ -1914,14 +1922,14 @@ async function loadEntryScript(entry: ManifestEntry, source: ManifestSource) {
     const reference = resolveReference(entry.url, source, "artefato");
     return reference.kind === "remote-url"
       ? fetchRemoteText(reference.url, "Artefato")
-      : readLocalTextFile(reference.path);
+      : readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
   }
 
   const reference = resolveReference(entry.url, source, "artefato");
   const bytes =
     reference.kind === "remote-url"
       ? await fetchRemoteArrayBuffer(reference.url, "Artefato")
-      : Uint8Array.from(await readLocalBinaryFile(reference.path)).buffer;
+      : Uint8Array.from(await readLocalBinaryFile({ baseDir: reference.baseDir, relativePath: reference.relativePath })).buffer;
   const zip = await JSZip.loadAsync(bytes);
   const scriptPath = entry.script ?? "wizard.js";
   const scriptFile = zip.file(scriptPath);
@@ -1945,8 +1953,8 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, source: Mani
       const markdown =
         reference.kind === "remote-url"
           ? await fetchRemoteText(reference.url, `Documento ${reference.url}`, { validateContentType: isAllowedDocumentContentType })
-          : await readLocalTextFile(reference.path);
-      const documentUrl = reference.kind === "remote-url" ? reference.url : reference.path;
+          : await readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
+      const documentUrl = reference.kind === "remote-url" ? reference.url : reference.display;
       const name = resolveDocumentName(markdown, documentUrl);
       return {
         id: `${entry.kind}-${index}-${hashDocumentId(documentUrl)}`,
@@ -2364,16 +2372,30 @@ function isAbsoluteRemoteUrl(value: string) {
   return /^https?:\/\//i.test(value);
 }
 
-function joinLocalPath(baseDir: string, relativePath: string): string {
-  const normalized = relativePath.replace(/\\/g, "/");
-  if (/^[a-zA-Z]:[\\/]/.test(relativePath) || normalized.startsWith("/") || normalized.startsWith("//") || normalized.includes("../")) {
-    throw new Error(`Referencia local nao permitida: ${relativePath}`);
+function sanitizeLocalManifestReference(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Referencia local nao pode ser vazia.");
   }
 
-  const stripped = normalized.replace(/^\.\/+/, "").replace(/^\.\//, "");
-  const separator = baseDir.includes("\\") ? "\\" : "/";
-  const base = baseDir.replace(/[\\/]+$/, "");
-  return `${base}${separator}${stripped.replace(/^[\\/]+/, "")}`.replace(/[\\/]+/g, separator);
+  const withoutSuffix = trimmed.split(/[?#]/, 1)[0] ?? "";
+  const decodedPath = safeDecode(withoutSuffix);
+  const normalized = decodedPath.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:/.test(normalized) || normalized.startsWith("/") || normalized.startsWith("//")) {
+    throw new Error(`Referencia local nao permitida: ${value}`);
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.some((segment) => segment === "..")) {
+    throw new Error(`Referencia local nao permitida: ${value}`);
+  }
+
+  const sanitized = segments.filter((segment) => segment !== ".").join("/");
+  if (!sanitized) {
+    throw new Error("Referencia local nao pode ser vazia.");
+  }
+
+  return sanitized;
 }
 
 function resolveReference(value: string, source: ManifestSource, label: string): ResolvedReference {
@@ -2385,10 +2407,12 @@ function resolveReference(value: string, source: ManifestSource, label: string):
     return { kind: "remote-url", url: normalizeAllowedUrl(value, label) };
   }
 
+  const relativePath = sanitizeLocalManifestReference(value);
   return {
     kind: "local-file",
-    path: joinLocalPath(source.baseDir, value),
-    display: value
+    baseDir: source.baseDir,
+    relativePath,
+    display: relativePath
   };
 }
 
