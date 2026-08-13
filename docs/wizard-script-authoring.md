@@ -59,6 +59,23 @@ The script has no direct access to the host DOM. All visible UI is rendered by t
 
 For ZIP entries, `entry.script` is optional. If it is omitted, Client Wizard looks for `wizard.js` at the ZIP root.
 
+## Local manifest files
+
+Users can load a manifest from disk with **Select manifest file**. In that mode, relative document and artifact paths resolve from the selected manifest file's folder:
+
+```json
+{
+  "terms": ["./docs/terms.md"],
+  "entry": {
+    "type": "script",
+    "url": "./wizard.js"
+  }
+}
+```
+
+HTTPS URLs inside a local manifest still work. Non-HTTPS remote URLs are rejected, except localhost development URLs. Local scripts still run as Web Worker scripts; selecting a local manifest does not add Node.js `require()`, `node_modules` resolution, or access to Node built-ins.
+
+
 ## URL rules
 
 Manifest, document, script, and ZIP URLs must use HTTPS. Local development URLs may use localhost HTTP, for example:

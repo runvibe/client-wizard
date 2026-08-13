@@ -138,6 +138,16 @@ When running `npm run tauri dev`, load:
 http://127.0.0.1:1420/sample/manifest.json
 ```
 
+### Local manifest file
+
+You can also start from a local `manifest.json` file. Click **Select manifest file** on the initial screen and choose:
+
+```text
+public\tests\local-file-basic\manifest.json
+```
+
+When a local manifest uses relative paths such as `./docs/terms.md`, `./wizard.js`, or `./package.zip`, Client Wizard resolves them from the selected manifest file's folder. The script or ZIP is still loaded only after the consent and permission steps.
+
 ### Public HTTPS ZIP manifest
 
 When using an installed app, use the HTTPS manifest hosted in this repository:
