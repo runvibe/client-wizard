@@ -229,9 +229,9 @@ Wizard surfaces emit UI notifications to registered handlers via `handle.events(
 
 | Event | Description | data payload |
 |---|---|---|
-| `next` | The user activated the Next button (or equivalent). | `{ index: number, step: object, storage: object }` — `index` is the zero-based destination step index; `step` is the step definition; `storage` is a snapshot of surface storage after navigation. |
-| `prev` | The user activated the Previous button. | `{ index: number, step: object, storage: object }` — destination step after moving back and current storage snapshot. |
-| `goTo` | A navigation request to a specific step (user or script-driven). | `{ index?: number, step?: object, storage: object }` — contains the resolved index or step and the storage snapshot after navigation. |
+| `next` | The user activated the Next button (or equivalent). | `{ index: number, step: WizardStep, storage: object }` |
+| `prev` | The user activated the Previous button. | `{ index: number, step: WizardStep, storage: object }` |
+| `goTo` | A navigation request to a specific step (user or script-driven). | `{ index: number, step: WizardStep, storage: object }` |
 | `link` | A link inside rendered Markdown was activated. | carries the parsed Markdown target payload: usually `{ href: string }`, or the parsed JSON object when the `href` encodes a JSON object (dynamic links). |
 
 Example usage:
@@ -240,13 +240,13 @@ Example usage:
 wizard.events((event) => {
   switch (event.type) {
     case "next":
-      console.log("Next ->", event.data.index, event.data.id);
+      console.log("Next ->", event.data.index, event.data.step);
       break;
     case "prev":
-      console.log("Prev ->", event.data.index);
+      console.log("Prev ->", event.data.step);
       break;
     case "goTo":
-      console.log("GoTo ->", event.data);
+      console.log("GoTo ->", event.data.index, event.data.step);
       break;
     case "link":
       console.log("Link clicked ->", event.data.href);
@@ -302,7 +302,7 @@ The host provides a small set of allowlisted primitives you can use inside Markd
   - Binds to a numeric storage path and renders progress.
 
 - WizardCheckbox
-  - Usage: `<WizardCheckbox name="agree" label="I accept the terms" />`
+  - Usage: `<WizardCheckbox name="termsAccepted" label="I accept the terms" />`
   - Props:
     - `name` (string) — Storage path the checkbox value is written to (boolean).
     - `label` (string) — Visible label shown next to the checkbox.
