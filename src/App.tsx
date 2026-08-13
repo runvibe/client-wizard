@@ -721,7 +721,7 @@ export function App() {
         const markdown =
           reference.kind === "remote-url"
             ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`)
-            : await readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
+            : await readLocalConsentDocument({ baseDir: reference.baseDir, relativePath: reference.relativePath });
         const resolvedUrl = reference.kind === "remote-url" ? reference.url : reference.display;
         setActiveSurface({
           id: crypto.randomUUID(),
