@@ -1303,7 +1303,6 @@ fn resolve_local_manifest_reference(
     requested_base_dir: &str,
     relative_path: &str,
 ) -> Result<PathBuf, String> {
-    let selected_base_dir = canonicalize_local_manifest_base_dir(selected_base_dir)?;
     let requested_base_dir = canonicalize_local_manifest_base_dir(Path::new(requested_base_dir))?;
     if requested_base_dir != selected_base_dir {
         return Err("Pasta base nao corresponde ao manifesto local selecionado.".to_string());
@@ -1617,6 +1616,10 @@ mod local_manifest_tests {
         dir
     }
 
+    fn pinned_base(dir: &Path) -> PathBuf {
+        dir.canonicalize().expect("canonical base")
+    }
+
     #[test]
     fn read_local_text_file_rejects_invalid_utf8() {
         let dir = temp_dir("invalid-utf8");
@@ -1624,7 +1627,7 @@ mod local_manifest_tests {
         fs::write(&file, [0xff, 0xfe, 0xfd]).expect("write invalid utf8");
 
         let result = read_local_text_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "manifest.json".to_string(),
         );
@@ -1642,7 +1645,7 @@ mod local_manifest_tests {
         fs::write(&file, "# Terms").expect("write terms");
 
         let result = read_local_text_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "docs/terms.md".to_string(),
         )
@@ -1658,7 +1661,7 @@ mod local_manifest_tests {
         fs::write(&file, [1_u8, 2, 3, 4]).expect("write binary");
 
         let result = read_local_binary_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "package.zip".to_string(),
         )
@@ -1674,7 +1677,7 @@ mod local_manifest_tests {
         fs::create_dir_all(&file).expect("create directory");
 
         let result = read_local_text_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "folder".to_string(),
         );
@@ -1690,7 +1693,7 @@ mod local_manifest_tests {
         fs::write(&outside, "secret").expect("write secret");
 
         let result = read_local_text_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "../secret.txt".to_string(),
         );
@@ -1704,8 +1707,11 @@ mod local_manifest_tests {
         let dir = temp_dir("absolute");
         let absolute = absolute_test_path();
 
-        let result =
-            read_local_text_file_blocking(dir.as_path(), dir.display().to_string(), absolute);
+        let result = read_local_text_file_blocking(
+            pinned_base(&dir).as_path(),
+            dir.display().to_string(),
+            absolute,
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("absoluta"));
@@ -1716,7 +1722,7 @@ mod local_manifest_tests {
         let dir = temp_dir("missing");
 
         let result = read_local_text_file_blocking(
-            dir.as_path(),
+            pinned_base(&dir).as_path(),
             dir.display().to_string(),
             "missing.md".to_string(),
         );
@@ -1736,6 +1742,32 @@ mod local_manifest_tests {
             selected.as_path(),
             &requested.display().to_string(),
             "terms.md",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("selecionado"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_local_manifest_reference_rejects_retargeted_selected_base() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("retargeted-base");
+        let selected = root.join("selected");
+        let outside = root.join("outside");
+        fs::create_dir_all(&selected).expect("create selected");
+        fs::create_dir_all(&outside).expect("create outside");
+        fs::write(outside.join("secret.txt"), "secret").expect("write secret");
+        let pinned_selected = selected.canonicalize().expect("canonical selected");
+
+        fs::remove_dir_all(&selected).expect("remove selected");
+        symlink(&outside, &selected).expect("retarget selected");
+
+        let result = resolve_local_manifest_reference(
+            &pinned_selected,
+            &selected.display().to_string(),
+            "secret.txt",
         );
 
         assert!(result.is_err());
