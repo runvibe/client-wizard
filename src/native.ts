@@ -18,6 +18,13 @@ export type DownloadFileResult = {
   bytes: number;
 };
 
+export type LocalManifestFile = {
+  path: string;
+  baseDir: string;
+  displayName: string;
+  content: string;
+};
+
 export type ExtractArchiveRequest = {
   archivePath: string;
   destinationName?: string;
@@ -68,6 +75,18 @@ export async function downloadFile(request: DownloadFileRequest): Promise<Downlo
 
 export async function extractArchive(request: ExtractArchiveRequest): Promise<ExtractArchiveResult> {
   return invoke<ExtractArchiveResult>("extract_archive", { request });
+}
+
+export async function selectManifestFile(): Promise<LocalManifestFile | null> {
+  return invoke<LocalManifestFile | null>("select_manifest_file");
+}
+
+export async function readLocalTextFile(path: string): Promise<string> {
+  return invoke<string>("read_local_text_file", { path });
+}
+
+export async function readLocalBinaryFile(path: string): Promise<number[]> {
+  return invoke<number[]>("read_local_binary_file", { path });
 }
 
 export async function fsExecute<T = unknown>(request: FsExecuteRequest): Promise<T> {

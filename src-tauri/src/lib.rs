@@ -14,6 +14,7 @@ use tauri::{
     App, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -37,6 +38,15 @@ struct DownloadedPackage {
     package_dir: String,
     entry_path: String,
     entry_html: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalManifestFile {
+    path: String,
+    base_dir: String,
+    display_name: String,
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +245,40 @@ async fn download_package(
 }
 
 #[tauri::command]
+async fn select_manifest_file(app: AppHandle) -> Result<Option<LocalManifestFile>, String> {
+    let Some(file_path) = app
+        .dialog()
+        .file()
+        .add_filter("Client Wizard manifest", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+
+    let path = file_path
+        .into_path()
+        .map_err(|_| "O seletor retornou um caminho de arquivo invalido.".to_string())?;
+    let content = read_local_text_file_blocking(path.display().to_string())?;
+    let base_dir = path
+        .parent()
+        .ok_or_else(|| "Manifesto local nao possui diretorio pai.".to_string())?
+        .display()
+        .to_string();
+    let display_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("manifest.json")
+        .to_string();
+
+    Ok(Some(LocalManifestFile {
+        path: path.display().to_string(),
+        base_dir,
+        display_name,
+        content,
+    }))
+}
+
+#[tauri::command]
 async fn execute_native(command: NativeCommand) -> Result<ExecutorResult, String> {
     match command {
         NativeCommand::SystemInfo => Ok(system_info()),
@@ -245,6 +289,16 @@ async fn execute_native(command: NativeCommand) -> Result<ExecutorResult, String
             args,
         } => run_script(shell, script, args.unwrap_or_default()).await,
     }
+}
+
+#[tauri::command]
+async fn read_local_text_file(path: String) -> Result<String, String> {
+    read_local_text_file_blocking(path)
+}
+
+#[tauri::command]
+async fn read_local_binary_file(path: String) -> Result<Vec<u8>, String> {
+    read_local_binary_file_blocking(path)
 }
 
 #[tauri::command]
@@ -1117,6 +1171,37 @@ fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(canonical_candidate)
 }
 
+const LOCAL_TEXT_FILE_LIMIT: u64 = 2 * 1024 * 1024;
+const LOCAL_BINARY_FILE_LIMIT: u64 = 50 * 1024 * 1024;
+
+fn ensure_readable_file(path: &Path, max_bytes: u64) -> Result<(), String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Falha ao ler metadados do arquivo local: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Somente arquivos podem ser lidos.".to_string());
+    }
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "Arquivo local excede limite de {} MB.",
+            max_bytes / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+fn read_local_text_file_blocking(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    ensure_readable_file(&path, LOCAL_TEXT_FILE_LIMIT)?;
+    fs::read_to_string(&path)
+        .map_err(|error| format!("Falha ao ler arquivo local como UTF-8: {error}"))
+}
+
+fn read_local_binary_file_blocking(path: String) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(path);
+    ensure_readable_file(&path, LOCAL_BINARY_FILE_LIMIT)?;
+    fs::read(&path).map_err(|error| format!("Falha ao ler arquivo local: {error}"))
+}
+
 fn parse_manifest_launch_args(args: &[String]) -> Option<Result<LaunchManifestPayload, String>> {
     for (index, arg) in args.iter().enumerate() {
         if arg.starts_with("client-wizard://") {
@@ -1254,6 +1339,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(configure_manifest_launch)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1275,9 +1361,12 @@ pub fn run() {
             extract_archive,
             fs_execute,
             open_external_url,
+            select_manifest_file,
             open_about,
             open_audit,
             open_markdown_document,
+            read_local_text_file,
+            read_local_binary_file,
             show_native_menu
         ])
         .run(tauri::generate_context!())
@@ -1327,6 +1416,55 @@ fn open_about_window(app: &AppHandle, about_data: serde_json::Value) {
     .build()
     {
         eprintln!("Falha ao abrir janela de about: {error}");
+    }
+}
+
+#[cfg(test)]
+mod local_manifest_tests {
+    use super::*;
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("client-wizard-{name}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn read_local_text_file_rejects_invalid_utf8() {
+        let dir = temp_dir("invalid-utf8");
+        let file = dir.join("manifest.json");
+        fs::write(&file, [0xff, 0xfe, 0xfd]).expect("write invalid utf8");
+
+        let result = read_local_text_file_blocking(file.display().to_string());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("UTF-8"));
+    }
+
+    #[test]
+    fn read_local_binary_file_returns_bytes() {
+        let dir = temp_dir("binary");
+        let file = dir.join("package.zip");
+        fs::write(&file, [1_u8, 2, 3, 4]).expect("write binary");
+
+        let result = read_local_binary_file_blocking(file.display().to_string()).expect("read binary");
+
+        assert_eq!(result, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn read_local_text_file_rejects_directories() {
+        let dir = temp_dir("directory");
+
+        let result = read_local_text_file_blocking(dir.display().to_string());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Somente arquivos"));
     }
 }
 
