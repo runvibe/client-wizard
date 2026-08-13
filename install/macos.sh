@@ -14,6 +14,38 @@ need_cmd() {
   fi
 }
 
+patch_macos_plist() {
+  local app_path="$1"
+  local plist="$app_path/Contents/Info.plist"
+
+  if [ ! -f "$plist" ]; then
+    echo "Missing Info.plist in $app_path." >&2
+    exit 1
+  fi
+
+  if grep -Fq "<key>LSRequiresCarbon</key>" "$plist"; then
+    local patched_plist="$plist.tmp"
+    awk '
+      skip_next == 1 {
+        skip_next = 0
+        next
+      }
+      /<key>LSRequiresCarbon<\/key>/ {
+        skip_next = 1
+        next
+      }
+      {
+        print
+      }
+    ' "$plist" > "$patched_plist"
+    mv "$patched_plist" "$plist"
+  fi
+}
+
+if [ "${CLIENT_WIZARD_TESTING:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 need_cmd curl
 need_cmd tar
 need_cmd awk
@@ -127,6 +159,7 @@ mkdir -p "$INSTALL_DIR"
 TARGET_APP="$INSTALL_DIR/$APP_NAME"
 rm -rf "$TARGET_APP"
 ditto "$EXTRACTED_APP" "$TARGET_APP"
+patch_macos_plist "$TARGET_APP"
 
 if command -v codesign >/dev/null 2>&1; then
   echo "Applying local ad-hoc signature..."
