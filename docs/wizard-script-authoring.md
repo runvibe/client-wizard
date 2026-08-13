@@ -227,12 +227,14 @@ Handle methods:
 
 Wizard surfaces emit UI notifications to registered handlers via `handle.events(callback)`. Each event is an object with `type` and `data` properties. The following event types are implemented by the host:
 
+Normal HTTP links are opened externally by the host. Local `.md` links are loaded by the host without notifying `wizard.events()`.
+
 | Event | Description | data payload |
 |---|---|---|
 | `next` | The user activated the Next button (or equivalent). | `{ index: number, step: WizardStep, storage: object }` |
 | `prev` | The user activated the Previous button. | `{ index: number, step: WizardStep, storage: object }` |
 | `goTo` | A navigation request to a specific step (user or script-driven). | `{ index: number, step: WizardStep, storage: object }` |
-| `link` | A link inside rendered Markdown was activated. | carries the parsed Markdown target payload: usually `{ href: string }`, or the parsed JSON object when the `href` encodes a JSON object (dynamic links). |
+| `link` | Emitted only when a Markdown link uses a dynamic JSON `href` target. | carries the parsed JSON object from the `href`. |
 
 Example usage:
 
