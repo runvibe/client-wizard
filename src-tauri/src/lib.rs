@@ -335,6 +335,16 @@ async fn read_local_binary_file(
 }
 
 #[tauri::command]
+async fn read_local_consent_document(
+    selected_manifest: State<'_, SelectedLocalManifestState>,
+    base_dir: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let pending_base_dir = pending_local_manifest_base_dir(&selected_manifest)?;
+    read_local_consent_document_blocking(&pending_base_dir, base_dir, relative_path)
+}
+
+#[tauri::command]
 async fn confirm_local_manifest_scope(
     selected_manifest: State<'_, SelectedLocalManifestState>,
     manifest_path: String,
@@ -1268,6 +1278,18 @@ fn selected_local_manifest_base_dir(
         .ok_or_else(|| "Nenhum manifesto local selecionado.".to_string())
 }
 
+fn pending_local_manifest_base_dir(
+    selected_manifest: &State<'_, SelectedLocalManifestState>,
+) -> Result<PathBuf, String> {
+    selected_manifest
+        .current
+        .lock()
+        .map_err(|_| "Falha ao acessar o manifesto local selecionado.".to_string())?
+        .pending_base_dir
+        .clone()
+        .ok_or_else(|| "Nenhum manifesto local pendente.".to_string())
+}
+
 fn clear_selected_local_manifest_scope(state: &mut SelectedLocalManifestStateInner) {
     state.pending_manifest_path = None;
     state.pending_base_dir = None;
@@ -1362,6 +1384,29 @@ fn read_local_text_file_blocking(
 ) -> Result<String, String> {
     let path = resolve_local_manifest_reference(selected_base_dir, &base_dir, &relative_path)?;
     read_local_text_file_at_path(&path)
+}
+
+fn read_local_consent_document_blocking(
+    selected_base_dir: &Path,
+    base_dir: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let path = resolve_local_manifest_reference(selected_base_dir, &base_dir, &relative_path)?;
+    ensure_local_consent_document_path(&path)?;
+    read_local_text_file_at_path(&path)
+}
+
+fn ensure_local_consent_document_path(path: &Path) -> Result<(), String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "Documento local precisa ter extensao de documento.".to_string())?;
+
+    match extension.as_str() {
+        "md" | "markdown" | "txt" | "html" | "htm" => Ok(()),
+        _ => Err("Documento local precisa ser markdown, texto ou HTML.".to_string()),
+    }
 }
 
 fn read_local_binary_file_at_path(path: &Path) -> Result<Vec<u8>, String> {
@@ -1544,6 +1589,7 @@ pub fn run() {
             open_markdown_document,
             read_local_text_file,
             read_local_binary_file,
+            read_local_consent_document,
             confirm_local_manifest_scope,
             clear_local_manifest_scope,
             show_native_menu
@@ -1652,6 +1698,38 @@ mod local_manifest_tests {
         .expect("read text");
 
         assert_eq!(result, "# Terms");
+    }
+
+    #[test]
+    fn read_local_consent_document_allows_document_extensions() {
+        let dir = temp_dir("consent-doc");
+        let docs = dir.join("docs");
+        fs::create_dir_all(&docs).expect("create docs");
+        fs::write(docs.join("privacy.markdown"), "# Privacy").expect("write privacy");
+
+        let result = read_local_consent_document_blocking(
+            pinned_base(&dir).as_path(),
+            dir.display().to_string(),
+            "docs/privacy.markdown".to_string(),
+        )
+        .expect("read consent document");
+
+        assert_eq!(result, "# Privacy");
+    }
+
+    #[test]
+    fn read_local_consent_document_rejects_script_extension() {
+        let dir = temp_dir("consent-script");
+        fs::write(dir.join("wizard.js"), "console.log('nope');").expect("write script");
+
+        let result = read_local_consent_document_blocking(
+            pinned_base(&dir).as_path(),
+            dir.display().to_string(),
+            "wizard.js".to_string(),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Documento local"));
     }
 
     #[test]

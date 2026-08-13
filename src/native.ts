@@ -94,6 +94,13 @@ export async function clearLocalManifestScope(): Promise<void> {
   return invoke<void>("clear_local_manifest_scope");
 }
 
+export async function readLocalConsentDocument(reference: LocalManifestReference): Promise<string> {
+  return invoke<string>("read_local_consent_document", {
+    baseDir: reference.baseDir,
+    relativePath: reference.relativePath
+  });
+}
+
 export async function readLocalTextFile(reference: LocalManifestReference): Promise<string> {
   return invoke<string>("read_local_text_file", {
     baseDir: reference.baseDir,

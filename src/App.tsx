@@ -28,6 +28,7 @@ import {
   openExternalUrl,
   openMarkdownDocumentWindow,
   readLocalBinaryFile,
+  readLocalConsentDocument,
   readLocalTextFile,
   selectManifestFile,
   type FsExecuteRequest,
@@ -330,7 +331,6 @@ export function App() {
     }
 
     const loadedManifest = validateManifest(parsed, source);
-    await confirmLocalManifestScope(selected.path);
     const loadedDocuments = await loadConsentDocuments(loadedManifest, source);
 
     setManifestSource(source);
@@ -372,6 +372,9 @@ export function App() {
       input: manifest.entry
     });
     try {
+      if (manifestSource?.kind === "local-file") {
+        await confirmLocalManifestScope(manifestSource.path);
+      }
       const script = await loadEntryScript(manifest.entry, manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl });
       startWorker(script);
       setAppState("running");
@@ -1953,7 +1956,7 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, source: Mani
       const markdown =
         reference.kind === "remote-url"
           ? await fetchRemoteText(reference.url, `Documento ${reference.url}`, { validateContentType: isAllowedDocumentContentType })
-          : await readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
+          : await readLocalConsentDocument({ baseDir: reference.baseDir, relativePath: reference.relativePath });
       const documentUrl = reference.kind === "remote-url" ? reference.url : reference.display;
       const name = resolveDocumentName(markdown, documentUrl);
       return {
