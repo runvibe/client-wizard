@@ -1,0 +1,20 @@
+{
+  "name": "Wizard ZIP de exemplo",
+  "description": "Demonstra um pacote ZIP com wizard.js extraido e executado pelo Client Wizard.",
+  "version": "0.1.0",
+  "terms": [
+    "./docs/terms.md"
+  ],
+  "entry": {
+    "type": "zip",
+    "url": "./package.zip",
+    "script": "wizard.js"
+  },
+  "permissions": [
+    {
+      "id": "native:systemInfo",
+      "title": "Ler informacoes do sistema",
+      "description": "Permite consultar sistema operacional, arquitetura, CPU e memoria."
+    }
+  ]
+}

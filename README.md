@@ -145,6 +145,16 @@ http://127.0.0.1:1420/tests/ventoy/manifest.json
 
 Esse wizard identifica o sistema, consulta o ultimo release publico de `ventoy/Ventoy` no GitHub, escolhe o pacote compactado adequado (`windows.zip` ou `linux.tar.gz`) e solicita confirmacao antes de baixar e descompactar em uma pasta local de teste. Ele nao instala o Ventoy em disco/USB.
 
+## Exemplo de manifesto com ZIP
+
+Para testar um manifesto cujo artefato e um pacote ZIP, carregue:
+
+```text
+http://127.0.0.1:1420/tests/zip-basic/manifest.json
+```
+
+Esse manifesto aponta para `public\tests\zip-basic\package.zip`. O app baixa o ZIP apos o consentimento, extrai `wizard.js` em memoria usando o campo `entry.script` e executa esse script como orquestrador do wizard.
+
 ## Exemplo de manifesto
 
 ```json
