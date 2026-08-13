@@ -61,13 +61,13 @@ Supported installer variables:
 Install into `/Applications`:
 
 ```bash
-CLIENT_WIZARD_INSTALL_DIR="/Applications" curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | CLIENT_WIZARD_INSTALL_DIR="/Applications" bash
 ```
 
 Install without opening the app:
 
 ```bash
-CLIENT_WIZARD_OPEN=0 curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | bash -s -- 2026.08.0
+curl -fsSL https://raw.githubusercontent.com/runvibe/client-wizard/main/install/macos.sh | CLIENT_WIZARD_OPEN=0 bash -s -- 2026.08.0
 ```
 
 Open the installed app with a manifest:
