@@ -14,7 +14,25 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Progress, ProgressLabel } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { eventsToCsv, listAuditEvents, logAuditEvent, type AuditCategory, type AuditEvent, type AuditEventInput, type AuditLevel } from "./audit";
-import { downloadFile, errorMessage, executeNative, extractArchive, fsExecute, getLaunchManifestUrl, openAboutWindow, openAuditWindow, openExternalUrl, openMarkdownDocumentWindow, type FsExecuteRequest, type FsPath, type LaunchManifestPayload } from "./native";
+import {
+  downloadFile,
+  errorMessage,
+  executeNative,
+  extractArchive,
+  fsExecute,
+  getLaunchManifestUrl,
+  openAboutWindow,
+  openAuditWindow,
+  openExternalUrl,
+  openMarkdownDocumentWindow,
+  readLocalBinaryFile,
+  readLocalTextFile,
+  selectManifestFile,
+  type FsExecuteRequest,
+  type FsPath,
+  type LaunchManifestPayload,
+  type LocalManifestFile
+} from "./native";
 import type {
   ActiveSurface,
   ClientWizardManifest,
@@ -37,6 +55,14 @@ type ConsentDocument = {
   url: string;
   markdown: string;
 };
+
+type ManifestSource =
+  | { kind: "remote-url"; url: string; display: string }
+  | { kind: "local-file"; path: string; baseDir: string; display: string };
+
+type ResolvedReference =
+  | { kind: "remote-url"; url: string }
+  | { kind: "local-file"; path: string; display: string };
 
 type RuntimeMessage = {
   source: "client-wizard-script";
@@ -67,6 +93,7 @@ const localhostNames = new Set(["localhost", "127.0.0.1", "::1"]);
 export function App() {
   const [appState, setAppState] = useState<AppState>("idle");
   const [manifestUrl, setManifestUrl] = useState("");
+  const [manifestSource, setManifestSource] = useState<ManifestSource>();
   const [manifest, setManifest] = useState<ClientWizardManifest>();
   const [error, setError] = useState("");
   const [consentStep, setConsentStep] = useState<ConsentStep>("terms");
@@ -132,7 +159,7 @@ export function App() {
       listen<NativeProgressEvent>("client-wizard://extract-progress", (event) => applyNativeProgress(event.payload)),
       listen<LaunchManifestPayload>("client-wizard-open-manifest", (event) => {
         if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
-          void loadManifest(event.payload.manifestUrl, event.payload.source);
+          void runManifestLoad(() => loadRemoteManifest(event.payload.manifestUrl, event.payload.source));
         }
       }),
       listen<string>("client-wizard-open-manifest-error", (event) => {
@@ -169,7 +196,7 @@ export function App() {
     getLaunchManifestUrl()
       .then((payload) => {
         if (active && payload) {
-          void loadManifest(payload.manifestUrl, payload.source);
+        void runManifestLoad(() => loadRemoteManifest(payload.manifestUrl, payload.source));
         }
       })
       .catch((caughtError) => {
@@ -184,8 +211,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("clientWizardAbout", JSON.stringify(createAboutData(manifest, manifestUrl)));
-  }, [manifest, manifestUrl]);
+    localStorage.setItem("clientWizardAbout", JSON.stringify(createAboutData(manifest, manifestSource?.display ?? manifestUrl)));
+  }, [manifest, manifestUrl, manifestSource?.display]);
 
   const canStart =
     manifest !== undefined &&
@@ -195,54 +222,12 @@ export function App() {
 
   async function submitManifest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await loadManifest(manifestUrl, "manual");
+    await runManifestLoad(() => loadRemoteManifest(manifestUrl, "manual"));
   }
 
-  async function loadManifest(inputUrl: string, source: "manual" | LaunchManifestPayload["source"]) {
-    setError("");
-    setActiveSurface(undefined);
-    stopWorker();
-
+  async function runManifestLoad(loader: () => Promise<void>) {
     try {
-      setAppState("loading-manifest");
-      const url = normalizeAllowedUrl(inputUrl, "manifesto");
-      setManifestUrl(url);
-      sessionIdRef.current = crypto.randomUUID();
-      audit({
-        level: "info",
-        category: "manifest",
-        action: "manifest.load.start",
-        summary: "Carregando manifesto",
-        input: { url, source }
-      });
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Manifesto retornou HTTP ${response.status}.`);
-      }
-      const loadedManifest = validateManifest(await response.json(), url);
-      const loadedDocuments = await loadConsentDocuments(loadedManifest, url);
-
-      setManifestUrl(url);
-      setManifest(loadedManifest);
-      setConsentDocuments(loadedDocuments);
-      setCurrentTermIndex(0);
-      setAcceptedTermIds({});
-      setAcceptedDocumentIds({});
-      setAcceptedPermissions({});
-      setConsentStep(getInitialConsentStep(loadedDocuments));
-      setAppState("consent");
-      audit({
-        level: "info",
-        category: "manifest",
-        action: "manifest.load.success",
-        summary: `Manifesto carregado: ${loadedManifest.name}`,
-        output: {
-          name: loadedManifest.name,
-          source,
-          documents: loadedDocuments.map((document) => ({ kind: document.kind, name: document.name, url: document.url })),
-          permissions: loadedManifest.permissions.map((permission) => permission.id)
-        }
-      });
+      await loader();
     } catch (caughtError) {
       setError(errorMessage(caughtError));
       setAppState("idle");
@@ -254,6 +239,115 @@ export function App() {
         error: errorMessage(caughtError)
       });
     }
+  }
+
+  async function loadRemoteManifest(inputUrl: string, source: "manual" | LaunchManifestPayload["source"]) {
+    setError("");
+    setActiveSurface(undefined);
+    stopWorker();
+    setAppState("loading-manifest");
+    const url = normalizeAllowedUrl(inputUrl, "manifesto");
+    const sourceData: ManifestSource = { kind: "remote-url", url, display: url };
+    sessionIdRef.current = crypto.randomUUID();
+    audit({
+      level: "info",
+      category: "manifest",
+      action: "manifest.load.start",
+      summary: "Carregando manifesto",
+      input: { source: sourceData, sourceKind: source }
+    });
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Manifesto retornou HTTP ${response.status}.`);
+    }
+    const loadedManifest = validateManifest(await response.json(), sourceData);
+    const loadedDocuments = await loadConsentDocuments(loadedManifest, sourceData);
+
+    setManifestSource(sourceData);
+    setManifestUrl(sourceData.display);
+    setManifest(loadedManifest);
+    setConsentDocuments(loadedDocuments);
+    setCurrentTermIndex(0);
+    setAcceptedTermIds({});
+    setAcceptedDocumentIds({});
+    setAcceptedPermissions({});
+    setConsentStep(getInitialConsentStep(loadedDocuments));
+    setAppState("consent");
+    audit({
+      level: "info",
+      category: "manifest",
+      action: "manifest.load.success",
+      summary: `Manifesto carregado: ${loadedManifest.name}`,
+      output: {
+        name: loadedManifest.name,
+        source: sourceData,
+        launchSource: source,
+        documents: loadedDocuments.map((document) => ({ kind: document.kind, name: document.name, url: document.url })),
+        permissions: loadedManifest.permissions.map((permission) => permission.id)
+      }
+    });
+  }
+
+  async function loadSelectedManifestFile() {
+    setError("");
+    setActiveSurface(undefined);
+    stopWorker();
+    setAppState("loading-manifest");
+
+    const selected: LocalManifestFile | null = await selectManifestFile();
+    if (!selected) {
+      setAppState("idle");
+      return;
+    }
+
+    const source: ManifestSource = {
+      kind: "local-file",
+      path: selected.path,
+      baseDir: selected.baseDir,
+      display: selected.path
+    };
+
+    sessionIdRef.current = crypto.randomUUID();
+    audit({
+      level: "info",
+      category: "manifest",
+      action: "manifest.load.start",
+      summary: "Carregando manifesto local",
+      input: { source }
+    });
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(selected.content);
+    } catch (caughtError) {
+      throw new Error(`Manifesto local nao contem JSON valido: ${errorMessage(caughtError)}`);
+    }
+
+    const loadedManifest = validateManifest(parsed, source);
+    const loadedDocuments = await loadConsentDocuments(loadedManifest, source);
+
+    setManifestSource(source);
+    setManifestUrl(source.display);
+    setManifest(loadedManifest);
+    setConsentDocuments(loadedDocuments);
+    setCurrentTermIndex(0);
+    setAcceptedTermIds({});
+    setAcceptedDocumentIds({});
+    setAcceptedPermissions({});
+    setConsentStep(getInitialConsentStep(loadedDocuments));
+    setAppState("consent");
+    audit({
+      level: "info",
+      category: "manifest",
+      action: "manifest.load.success",
+      summary: `Manifesto carregado: ${loadedManifest.name}`,
+      output: {
+        name: loadedManifest.name,
+        source,
+        documents: loadedDocuments.map((document) => ({ kind: document.kind, name: document.name, url: document.url })),
+        permissions: loadedManifest.permissions.map((permission) => permission.id)
+      }
+    });
   }
 
   async function startWizard() {
@@ -271,7 +365,7 @@ export function App() {
       input: manifest.entry
     });
     try {
-      const script = await loadEntryScript(manifest.entry, manifestUrl);
+      const script = await loadEntryScript(manifest.entry, manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl });
       startWorker(script);
       setAppState("running");
       audit({
@@ -604,12 +698,11 @@ export function App() {
       }
 
       if (isLocalMarkdownHref(decodedHref)) {
-        const markdownUrl = new URL(decodedHref, manifestUrl || window.location.href);
-        const response = await fetch(markdownUrl);
-        if (!response.ok) {
-          throw new Error(`Markdown retornou HTTP ${response.status}.`);
-        }
-        const markdown = await response.text();
+        const reference = resolveReference(decodedHref, manifestSource ?? { kind: "remote-url", url: manifestUrl || window.location.href, display: manifestUrl || window.location.href }, "markdown");
+        const markdown =
+          reference.kind === "remote-url"
+            ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`)
+            : await readLocalTextFile(reference.path);
         setActiveSurface({
           id: crypto.randomUUID(),
           kind: "markdown",
@@ -861,7 +954,7 @@ export function App() {
       open={isAppMenuOpen}
       onOpenChange={setIsAppMenuOpen}
       onAbout={() => {
-        void openAboutWindow(createAboutData(manifest, manifestUrl)).catch((caughtError) => {
+        void openAboutWindow(createAboutData(manifest, manifestSource?.display ?? manifestUrl)).catch((caughtError) => {
           audit({
             level: "error",
             category: "native",
@@ -1078,33 +1171,43 @@ export function App() {
             <Badge variant="secondary">Manifest runtime</Badge>
           </div>
           <p className="max-w-2xl text-muted-foreground">
-            Informe a URL HTTPS de um manifest.json. O app mostra termos e permissoes antes de baixar o script.
+            Enter a manifest URL or select a local manifest.json file. The app shows terms and permissions before loading any script.
           </p>
         </div>
         <form className="max-w-2xl" onSubmit={submitManifest}>
           <FieldGroup>
             <Field data-invalid={Boolean(error)}>
-              <FieldLabel htmlFor="manifest-url">URL do manifest.json</FieldLabel>
+              <FieldLabel htmlFor="manifest-url">Manifest URL</FieldLabel>
               <InputGroup>
                 <InputGroupInput
                   autoFocus
                   aria-invalid={Boolean(error)}
                   id="manifest-url"
                   inputMode="url"
-                  placeholder="https://exemplo.com/client-wizard/manifest.json"
+                  placeholder="https://example.com/client-wizard/manifest.json"
                   type="url"
                   value={manifestUrl}
                   onChange={(event) => setManifestUrl(event.target.value)}
                 />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton disabled={appState === "loading-manifest"} type="submit" variant="default">
-                    {appState === "loading-manifest" ? "Lendo..." : "Carregar"}
+                    {appState === "loading-manifest" ? "Reading..." : "Load"}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
               <FieldError>{error}</FieldError>
             </Field>
-
+            <div className="flex max-w-2xl flex-wrap gap-2">
+              <Button
+                disabled={appState === "loading-manifest"}
+                type="button"
+                variant="secondary"
+                onClick={() => void runManifestLoad(loadSelectedManifestFile)}
+              >
+                Select manifest file
+              </Button>
+              <p className="text-sm text-muted-foreground">Local relative paths resolve from the selected manifest file folder.</p>
+            </div>
           </FieldGroup>
         </form>
       </section>
@@ -1130,6 +1233,7 @@ export function App() {
     setAcceptedPermissions({});
     setActiveSurface(undefined);
     setError("");
+    setManifestSource(undefined);
   }
 
   function AppCommandMenu({
@@ -1177,11 +1281,12 @@ export function App() {
   }
 
   function audit(input: Omit<AuditEventInput, "sessionId" | "runtimeId" | "manifestUrl" | "manifestName">) {
+    const sourceDisplay = manifestSource?.display ?? manifestUrl;
     void logAuditEvent({
       ...input,
       sessionId: sessionIdRef.current,
       runtimeId: runtimeIdRef.current || undefined,
-      manifestUrl: manifestUrl || undefined,
+      manifestUrl: sourceDisplay || undefined,
       manifestName: manifest?.name
     }).catch((caughtError) => {
       console.error("Falha ao gravar auditoria.", caughtError);
@@ -1803,18 +1908,20 @@ globalThis.onmessage = (event) => {
 `;
 }
 
-async function loadEntryScript(entry: ManifestEntry, manifestUrl: string) {
-  const artifactUrl = normalizeAllowedUrl(new URL(entry.url, manifestUrl).toString(), "artefato");
-  const response = await fetch(artifactUrl);
-  if (!response.ok) {
-    throw new Error(`Artefato retornou HTTP ${response.status}.`);
-  }
-
+async function loadEntryScript(entry: ManifestEntry, source: ManifestSource) {
   if (entry.type === "script") {
-    return response.text();
+    const reference = resolveReference(entry.url, source, "artefato");
+    return reference.kind === "remote-url"
+      ? fetchRemoteText(reference.url, "Artefato")
+      : readLocalTextFile(reference.path);
   }
 
-  const zip = await JSZip.loadAsync(await response.arrayBuffer());
+  const reference = resolveReference(entry.url, source, "artefato");
+  const bytes =
+    reference.kind === "remote-url"
+      ? await fetchRemoteArrayBuffer(reference.url, "Artefato")
+      : Uint8Array.from(await readLocalBinaryFile(reference.path)).buffer;
+  const zip = await JSZip.loadAsync(bytes);
   const scriptPath = entry.script ?? "wizard.js";
   const scriptFile = zip.file(scriptPath);
   if (!scriptFile) {
@@ -1824,7 +1931,7 @@ async function loadEntryScript(entry: ManifestEntry, manifestUrl: string) {
   return scriptFile.async("text");
 }
 
-async function loadConsentDocuments(manifest: ClientWizardManifest, manifestUrl: string): Promise<ConsentDocument[]> {
+async function loadConsentDocuments(manifest: ClientWizardManifest, source: ManifestSource): Promise<ConsentDocument[]> {
   const documentEntries: Array<{ kind: ConsentDocumentKind; url: string }> = [
     ...(manifest.terms ?? []).map((url) => ({ kind: "terms" as const, url })),
     ...(manifest.license ?? []).map((url) => ({ kind: "license" as const, url })),
@@ -1833,17 +1940,12 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, manifestUrl:
 
   return Promise.all(
     documentEntries.map(async (entry, index) => {
-      const documentUrl = normalizeAllowedUrl(new URL(entry.url, manifestUrl).toString(), documentKindLabel(entry.kind));
-      const response = await fetch(documentUrl);
-      if (!response.ok) {
-        throw new Error(`Documento ${documentUrl} retornou HTTP ${response.status}.`);
-      }
-      const contentType = response.headers.get("content-type") ?? "";
-      if (contentType && !isAllowedDocumentContentType(contentType)) {
-        throw new Error(`Documento ${documentUrl} retornou Content-Type nao suportado: ${contentType}.`);
-      }
-
-      const markdown = await response.text();
+      const reference = resolveReference(entry.url, source, documentKindLabel(entry.kind));
+      const markdown =
+        reference.kind === "remote-url"
+          ? await fetchRemoteText(reference.url, `Documento ${reference.url}`)
+          : await readLocalTextFile(reference.path);
+      const documentUrl = reference.kind === "remote-url" ? reference.url : reference.path;
       const name = resolveDocumentName(markdown, documentUrl);
       return {
         id: `${entry.kind}-${index}-${hashDocumentId(documentUrl)}`,
@@ -1856,11 +1958,11 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, manifestUrl:
   );
 }
 
-function validateManifest(value: unknown, manifestUrl: string): ClientWizardManifest {
+function validateManifest(value: unknown, source: ManifestSource): ClientWizardManifest {
   const manifest = asRecord(value);
   const name = requireString(manifest.name, "manifest.name");
   const description = requireString(manifest.description, "manifest.description");
-  const entry = validateEntry(manifest.entry, manifestUrl);
+  const entry = validateEntry(manifest.entry, source);
   const permissions = validatePermissions(manifest.permissions);
   const theme = validateTheme(manifest.theme);
 
@@ -1868,31 +1970,36 @@ function validateManifest(value: unknown, manifestUrl: string): ClientWizardMani
     name,
     description,
     version: typeof manifest.version === "string" ? manifest.version : undefined,
-    terms: validateDocumentUrlList(manifest.terms, "manifest.terms", manifestUrl),
-    license: validateDocumentUrlList(manifest.license, "manifest.license", manifestUrl),
-    privacy: validateDocumentUrlList(manifest.privacy, "manifest.privacy", manifestUrl),
+    terms: validateDocumentUrlList(manifest.terms, "manifest.terms", source),
+    license: validateDocumentUrlList(manifest.license, "manifest.license", source),
+    privacy: validateDocumentUrlList(manifest.privacy, "manifest.privacy", source),
     entry,
     theme,
     permissions
   };
 }
 
-function validateDocumentUrlList(value: unknown, field: string, manifestUrl: string): string[] | undefined {
+function validateDocumentUrlList(value: unknown, field: string, source: ManifestSource): string[] | undefined {
   if (value === undefined) {
     return undefined;
   }
   if (!Array.isArray(value)) {
     throw new Error(`${field} deve ser uma lista de URLs.`);
   }
-  return value.map((item, index) =>
-    normalizeAllowedUrl(new URL(requireString(item, `${field}[${index}]`), manifestUrl).toString(), field)
-  );
+  return value.map((item, index) => {
+    const reference = requireString(item, `${field}[${index}]`);
+    return source.kind === "remote-url" ? normalizeAllowedUrl(new URL(reference, source.url).toString(), field) : reference;
+  });
 }
 
-function validateEntry(value: unknown, manifestUrl: string): ManifestEntry {
+function validateEntry(value: unknown, source: ManifestSource): ManifestEntry {
   const entry = asRecord(value);
   const type = requireString(entry.type, "manifest.entry.type");
-  const url = normalizeAllowedUrl(new URL(requireString(entry.url, "manifest.entry.url"), manifestUrl).toString(), "artefato");
+  const entryUrl = requireString(entry.url, "manifest.entry.url");
+  const url =
+    source.kind === "remote-url"
+      ? normalizeAllowedUrl(new URL(entryUrl, source.url).toString(), "artefato")
+      : entryUrl;
   if (type === "script") {
     return { type, url };
   }
@@ -2252,6 +2359,54 @@ function normalizeAllowedUrl(value: string, label: string) {
   return url.toString();
 }
 
+function isAbsoluteRemoteUrl(value: string) {
+  return /^https?:\/\//i.test(value);
+}
+
+function joinLocalPath(baseDir: string, relativePath: string): string {
+  const normalized = relativePath.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:[\\/]/.test(relativePath) || normalized.startsWith("/") || normalized.startsWith("//") || normalized.includes("../")) {
+    throw new Error(`Referencia local nao permitida: ${relativePath}`);
+  }
+
+  const stripped = normalized.replace(/^\.\/+/, "").replace(/^\.\//, "");
+  const separator = baseDir.includes("\\") ? "\\" : "/";
+  const base = baseDir.replace(/[\\/]+$/, "");
+  return `${base}${separator}${stripped.replace(/^[\\/]+/, "")}`.replace(/[\\/]+/g, separator);
+}
+
+function resolveReference(value: string, source: ManifestSource, label: string): ResolvedReference {
+  if (source.kind === "remote-url") {
+    return { kind: "remote-url", url: normalizeAllowedUrl(new URL(value, source.url).toString(), label) };
+  }
+
+  if (isAbsoluteRemoteUrl(value)) {
+    return { kind: "remote-url", url: normalizeAllowedUrl(value, label) };
+  }
+
+  return {
+    kind: "local-file",
+    path: joinLocalPath(source.baseDir, value),
+    display: value
+  };
+}
+
+async function fetchRemoteText(url: string, label: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${label} retornou HTTP ${response.status}.`);
+  }
+  return response.text();
+}
+
+async function fetchRemoteArrayBuffer(url: string, label: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${label} retornou HTTP ${response.status}.`);
+  }
+  return response.arrayBuffer();
+}
+
 function getInitialConsentStep(documents: ConsentDocument[]): ConsentStep {
   if (documents.some((document) => document.kind === "terms")) {
     return "terms";
@@ -2297,25 +2452,21 @@ function documentKindLabel(kind: ConsentDocumentKind) {
   return kind === "license" ? "licenca" : "privacidade";
 }
 
-function isAllowedDocumentContentType(contentType: string) {
-  const normalized = contentType.toLowerCase();
-  return (
-    normalized.includes("text/markdown") ||
-    normalized.includes("text/plain") ||
-    normalized.includes("text/x-markdown") ||
-    normalized.includes("application/octet-stream")
-  );
-}
-
 function resolveDocumentName(markdown: string, documentUrl: string) {
   const heading = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
   if (heading) {
     return heading;
   }
 
-  const url = new URL(documentUrl);
-  const fileName = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() ?? "").replace(/\.[^.]+$/, "");
-  return fileName || url.host;
+  const isRemote = /^https?:\/\//i.test(documentUrl);
+  if (isRemote) {
+    const url = new URL(documentUrl);
+    const fileName = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() ?? "").replace(/\.[^.]+$/, "");
+    return fileName || url.host;
+  }
+
+  const fileName = documentUrl.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  return fileName.replace(/\.[^.]+$/, "") || documentUrl;
 }
 
 function hashDocumentId(value: string) {
