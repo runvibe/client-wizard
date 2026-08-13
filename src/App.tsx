@@ -703,6 +703,7 @@ export function App() {
           reference.kind === "remote-url"
             ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`)
             : await readLocalTextFile(reference.path);
+        const resolvedUrl = reference.kind === "remote-url" ? reference.url : reference.path;
         setActiveSurface({
           id: crypto.randomUUID(),
           kind: "markdown",
@@ -715,7 +716,7 @@ export function App() {
           action: "link.markdown.open",
           summary: "Markdown local aberto",
           surfaceId,
-          input: { href: decodedHref, url: markdownUrl.href }
+          input: { href: decodedHref, url: resolvedUrl }
         });
         return;
       }
@@ -1943,7 +1944,7 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, source: Mani
       const reference = resolveReference(entry.url, source, documentKindLabel(entry.kind));
       const markdown =
         reference.kind === "remote-url"
-          ? await fetchRemoteText(reference.url, `Documento ${reference.url}`)
+          ? await fetchRemoteText(reference.url, `Documento ${reference.url}`, { validateContentType: isAllowedDocumentContentType })
           : await readLocalTextFile(reference.path);
       const documentUrl = reference.kind === "remote-url" ? reference.url : reference.path;
       const name = resolveDocumentName(markdown, documentUrl);
@@ -2391,10 +2392,18 @@ function resolveReference(value: string, source: ManifestSource, label: string):
   };
 }
 
-async function fetchRemoteText(url: string, label: string) {
+async function fetchRemoteText(
+  url: string,
+  label: string,
+  options?: { validateContentType?: (contentType: string) => boolean }
+) {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`${label} retornou HTTP ${response.status}.`);
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType && options?.validateContentType && !options.validateContentType(contentType)) {
+    throw new Error(`${label} retornou Content-Type nao suportado: ${contentType}.`);
   }
   return response.text();
 }
@@ -2450,6 +2459,16 @@ function documentKindLabel(kind: ConsentDocumentKind) {
     return "termo";
   }
   return kind === "license" ? "licenca" : "privacidade";
+}
+
+function isAllowedDocumentContentType(contentType: string) {
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized.includes("text/markdown") ||
+    normalized.includes("text/plain") ||
+    normalized.includes("text/x-markdown") ||
+    normalized.includes("application/octet-stream")
+  );
 }
 
 function resolveDocumentName(markdown: string, documentUrl: string) {
