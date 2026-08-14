@@ -12,6 +12,7 @@ The audit trail should make API behavior diagnosable from inside the app. Every 
 - Audit native network/download operations triggered by `wizard.js`, including `clientWizard.downloadFile`.
 - Record both successful and failed responses with enough detail to diagnose HTTP, CORS, content-type, and payload issues.
 - Include sanitized body previews for successful and failed text/JSON responses.
+- Persist sanitized audit events to a disk-backed JSONL log so external tools can read or tail the audit stream.
 - Avoid logging secrets, cookies, authorization headers, or large/binary payload contents.
 - Preserve existing UX and existing higher-level audit events.
 
@@ -21,10 +22,11 @@ The audit trail should make API behavior diagnosable from inside the app. Every 
 - Do not add a new backend proxy for manifest/document/artifact fetches in this change.
 - Do not persist full response bodies or binary payload content in the audit log.
 - Do not change manifest validation rules, consent flow rules, or artifact trust rules.
+- Do not replace the current IndexedDB audit UI in this change.
 
 ## Recommended Approach
 
-Introduce a centralized `auditedFetch` helper for frontend network calls and add equivalent native-side audit events for Tauri download commands.
+Introduce a centralized `auditedFetch` helper for frontend network calls, add equivalent native-side audit events for Tauri download commands, and mirror sanitized audit events to a disk-backed JSONL sink.
 
 The frontend helper wraps `fetch()` and emits:
 
@@ -33,6 +35,8 @@ The frontend helper wraps `fetch()` and emits:
 3. `network.error` when no `Response` is available, such as CORS failures, DNS failures, connection failures, or browser-blocked requests.
 
 Native download operations should emit the same logical event family through the existing audit bridge from the caller side, using request metadata before invoking native code and native command results/errors after completion.
+
+The existing IndexedDB audit store remains the source for the in-app Audit window. The new disk sink is an additional persistence target designed for external access by support tools, log collectors, shell users, and automation.
 
 ## Event Shape
 
@@ -112,6 +116,42 @@ Body fields to redact in JSON-like previews:
 
 The existing audit payload sanitizer remains a final defense-in-depth layer.
 
+## Disk JSONL Sink
+
+Audit events should be written automatically to disk after sanitization. The default location should be the operating system's application data directory, under a Client Wizard audit subdirectory:
+
+- Windows: app data directory resolved by Tauri for Client Wizard.
+- macOS: app data directory resolved by Tauri for Client Wizard.
+- Linux: app data directory resolved by Tauri for Client Wizard.
+
+The primary file should be line-delimited JSON:
+
+- `audit/current.jsonl`
+
+Each line contains one sanitized `AuditEvent` object using the same schema shown in the in-app Audit window. This keeps external consumption simple with tools such as `tail`, `jq`, log shippers, or support scripts.
+
+### Rotation
+
+The writer should rotate logs to prevent unbounded growth:
+
+- Rotate when `current.jsonl` exceeds 10 MB.
+- Keep the most recent 10 rotated files.
+- Name rotated files with a timestamp, for example `audit/2026-08-14T14-30-00Z.jsonl`.
+- Rotation must never block or fail the wizard flow.
+
+### Write Semantics
+
+The disk sink is best-effort but observable:
+
+- A failed disk write must not prevent the IndexedDB audit write.
+- A failed IndexedDB write must not prevent a disk write.
+- If disk persistence fails, log the failure to the developer console and continue running.
+- Disk write failures should not recursively generate more disk audit events.
+
+### Security and Privacy
+
+Only sanitized events should be written to disk. The disk sink must not bypass existing redaction rules. Body previews remain bounded to 4 KB per event and binary payloads remain summarized without raw content.
+
 ## Frontend Integration
 
 Replace direct host `fetch()` calls with `auditedFetch` in:
@@ -144,6 +184,8 @@ Audit logging must never convert a failed network request into a success. If aud
 
 The helper should use `response.clone()` before reading previews so application code can still consume the original response body.
 
+The audit writer should attempt IndexedDB and disk persistence independently so one unavailable storage backend does not disable the other.
+
 ## Testing
 
 Add focused tests or test harness coverage for:
@@ -153,6 +195,10 @@ Add focused tests or test harness coverage for:
 - Successful JSON response logs a sanitized, limited preview.
 - Sensitive headers/body fields are redacted.
 - Binary artifact responses do not store raw body content.
+- Audit events are appended to `audit/current.jsonl` in the app data directory.
+- JSONL disk writes contain sanitized payloads only.
+- Disk write failure does not break network requests or IndexedDB audit logging.
+- Log rotation occurs when the configured size limit is exceeded.
 - Existing manifest/document/artifact validation behavior remains unchanged.
 
 Manual validation should include the S3 CORS failure case. The audit log should show the attempted URL and a `network.error` event explaining that no response was exposed by the browser.
