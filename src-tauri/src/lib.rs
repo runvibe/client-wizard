@@ -5,7 +5,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
@@ -98,6 +98,7 @@ struct DownloadFileResult {
 
 const AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUDIT_LOG_MAX_ROTATED_FILES: usize = 10;
+static AUDIT_LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1693,16 +1694,26 @@ fn append_audit_event_to_dir(
     max_bytes: u64,
     max_rotated_files: usize,
 ) -> Result<AuditDiskWriteResult, String> {
+    let _guard = audit_log_write_lock()
+        .lock()
+        .map_err(|_| "Falha ao sincronizar escrita da auditoria.".to_string())?;
     let audit_dir = app_data_dir.join("audit");
     fs::create_dir_all(&audit_dir)
         .map_err(|error| format!("Falha ao criar diretorio de auditoria: {error}"))?;
 
     let current_path = audit_dir.join("current.jsonl");
-    rotate_audit_log_if_needed(&audit_dir, &current_path, max_bytes, max_rotated_files)?;
-
     let mut line = serde_json::to_string(event)
         .map_err(|error| format!("Falha ao serializar evento de auditoria: {error}"))?;
     line.push('\n');
+    let line_bytes = line.len() as u64;
+
+    rotate_audit_log_if_needed(
+        &audit_dir,
+        &current_path,
+        max_bytes,
+        max_rotated_files,
+        line_bytes,
+    )?;
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -1729,6 +1740,7 @@ fn rotate_audit_log_if_needed(
     current_path: &Path,
     max_bytes: u64,
     max_rotated_files: usize,
+    next_write_bytes: u64,
 ) -> Result<(), String> {
     if !current_path.exists() {
         return Ok(());
@@ -1737,7 +1749,7 @@ fn rotate_audit_log_if_needed(
     let current_size = fs::metadata(current_path)
         .map_err(|error| format!("Falha ao ler tamanho da auditoria: {error}"))?
         .len();
-    if current_size < max_bytes {
+    if current_size.saturating_add(next_write_bytes) <= max_bytes {
         return Ok(());
     }
 
@@ -1745,6 +1757,10 @@ fn rotate_audit_log_if_needed(
     fs::rename(current_path, &rotated_path)
         .map_err(|error| format!("Falha ao rotacionar auditoria: {error}"))?;
     prune_rotated_audit_logs(audit_dir, max_rotated_files)
+}
+
+fn audit_log_write_lock() -> &'static Mutex<()> {
+    AUDIT_LOG_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn unique_rotated_audit_log_path(audit_dir: &Path) -> PathBuf {
@@ -2007,6 +2023,33 @@ mod local_manifest_tests {
 
         assert!(current.exists());
         assert!(rotated_count >= 1);
+    }
+
+    #[test]
+    fn append_audit_event_to_disk_rotates_before_crossing_limit() {
+        let dir = temp_dir("audit-rotation-crossing");
+        let audit_dir = dir.join("audit");
+        fs::create_dir_all(&audit_dir).expect("create audit dir");
+        fs::write(audit_dir.join("current.jsonl"), "12345678").expect("seed current log");
+
+        let result = append_audit_event_to_dir(&dir, &serde_json::json!({}), 9, 10)
+            .expect("append audit event");
+
+        let current_path = audit_dir.join("current.jsonl");
+        let current_content = fs::read_to_string(&current_path).expect("read current log");
+        let rotated_entries = fs::read_dir(&audit_dir)
+            .expect("read audit dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy() != "current.jsonl")
+            .collect::<Vec<_>>();
+
+        assert_eq!(result.bytes, current_content.len() as u64);
+        assert_eq!(current_content, "{}\n");
+        assert_eq!(rotated_entries.len(), 1);
+        assert_eq!(
+            fs::read_to_string(rotated_entries[0].path()).expect("read rotated log"),
+            "12345678"
+        );
     }
 
     #[cfg(unix)]
