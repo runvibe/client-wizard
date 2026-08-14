@@ -186,6 +186,14 @@ Client Wizard uses a default-deny model:
 
 The worker may have standard web APIs such as `fetch()` available, but Client Wizard does not yet expose a first-class permission-gated `httpRequest` bridge. Treat direct network access from `wizard.js` as current web runtime behavior, not as the final audited network API.
 
+### External audit log
+
+Client Wizard mirrors sanitized audit events to a JSONL file in the operating system's application data directory:
+
+`audit/current.jsonl`
+
+Each line is one audit event. External tools can tail this file for support, automation, or diagnostics. The log rotates at 10 MB and keeps the 10 most recent rotated files. Sensitive headers and fields such as tokens, cookies, passwords, and secrets are redacted before writing to disk.
+
 ## Documentation
 
 - [Writing `wizard.js` scripts](docs/wizard-script-authoring.md)

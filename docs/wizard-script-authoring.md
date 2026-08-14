@@ -516,6 +516,12 @@ const release = await fetch("https://api.github.com/repos/ventoy/Ventoy/releases
 
 This is current runtime behavior, not a dedicated Client Wizard permission model. Client Wizard does not yet provide an audited `clientWizard.httpRequest()` or `clientWizard.invoke({ type: "httpRequest" })` API. Future network access should be modeled as an explicit permission-gated capability with origin allowlists.
 
+### API audit events
+
+Host network calls and native downloads create `network.request`, `network.response`, and `network.error` events. For CORS failures, the browser may not expose an HTTP status or response body; in that case the audit event records `responseAvailable: false` and `likelyCause: cors-or-network`.
+
+Text and JSON responses include a sanitized preview up to 4 KB. Binary responses include a byte/type summary only.
+
 ## Complete minimal example
 
 Manifest:
