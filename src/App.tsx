@@ -1611,6 +1611,7 @@ const auditCategories: AuditCategory[] = [
   "manifest",
   "permission",
   "artifact",
+  "network",
   "runtime",
   "sdk",
   "surface",

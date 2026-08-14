@@ -1,11 +1,10 @@
-import { appendAuditEventToDisk } from "./native";
-
 export type AuditLevel = "debug" | "info" | "warning" | "error" | "security";
 
 export type AuditCategory =
   | "manifest"
   | "permission"
   | "artifact"
+  | "network"
   | "runtime"
   | "sdk"
   | "surface"
@@ -47,33 +46,19 @@ const databaseName = "clientWizardAudit";
 const databaseVersion = 1;
 const eventsStoreName = "events";
 
-export function createAuditEvent(input: AuditEventInput): AuditEvent {
-  const sanitizedInput = sanitizeAuditPayload(input.input);
-  const sanitizedOutput = sanitizeAuditPayload(input.output);
-
-  return {
+export async function logAuditEvent(input: AuditEventInput) {
+  const event: AuditEvent = {
     ...input,
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
-    input: sanitizedInput,
-    output: sanitizedOutput,
-    searchableText: createSearchableText({
-      ...input,
-      input: sanitizedInput,
-      output: sanitizedOutput
-    })
+    input: sanitizeAuditPayload(input.input),
+    output: sanitizeAuditPayload(input.output),
+    searchableText: createSearchableText(input)
   };
-}
 
-export async function logAuditEvent(input: AuditEventInput) {
-  const event = createAuditEvent(input);
-  const results = await Promise.allSettled([writeAuditEventToIndexedDb(event), appendAuditEventToDisk(event)]);
-
-  for (const result of results) {
-    if (result.status === "rejected") {
-      console.error("Falha ao persistir auditoria.", result.reason);
-    }
-  }
+  const database = await openAuditDatabase();
+  await writeEvent(database, event);
+  database.close();
 }
 
 export async function listAuditEvents(query: AuditSearchQuery = {}) {
@@ -172,15 +157,6 @@ function readAllEvents(database: IDBDatabase) {
   });
 }
 
-async function writeAuditEventToIndexedDb(event: AuditEvent) {
-  const database = await openAuditDatabase();
-  try {
-    await writeEvent(database, event);
-  } finally {
-    database.close();
-  }
-}
-
 export function sanitizeAuditPayload(value: unknown): unknown {
   if (value === undefined || value === null) {
     return value;
@@ -222,8 +198,8 @@ function createSearchableText(input: AuditEventInput) {
       input.action,
       input.summary,
       input.error,
-      safeStringify(input.input),
-      safeStringify(input.output)
+      safeStringify(sanitizeAuditPayload(input.input)),
+      safeStringify(sanitizeAuditPayload(input.output))
     ]
       .filter(Boolean)
       .join(" ")
