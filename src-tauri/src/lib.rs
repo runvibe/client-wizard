@@ -101,6 +101,7 @@ const AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUDIT_LOG_MAX_ROTATED_FILES: usize = 10;
 const AUDIT_BODY_PREVIEW_LIMIT: usize = 4 * 1024;
 static AUDIT_LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static AUDIT_JSON_KEY_VALUE_REGEX: OnceLock<Regex> = OnceLock::new();
 static AUDIT_KEY_VALUE_REGEX: OnceLock<Regex> = OnceLock::new();
 static AUDIT_AUTHORIZATION_REGEX: OnceLock<Regex> = OnceLock::new();
 static AUDIT_BEARER_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -1433,10 +1434,15 @@ fn sanitize_audit_json_value(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn redact_sensitive_audit_text(value: &str) -> String {
-    let authorization_redacted = audit_authorization_regex().replace_all(value, |captures: &Captures| {
-        format!("{}{}[redacted]", &captures[1], &captures[2])
-    });
-    let bearer_redacted = audit_bearer_regex().replace_all(&authorization_redacted, "Bearer [redacted]");
+    let json_pair_redacted = audit_json_key_value_regex()
+        .replace_all(value, |captures: &Captures| {
+            format!("{}[redacted]\"", &captures[1])
+        });
+    let authorization_redacted = audit_authorization_regex()
+        .replace_all(&json_pair_redacted, |captures: &Captures| {
+            format!("{}{}[redacted]", &captures[1], &captures[2])
+        });
+    let bearer_redacted = audit_bearer_regex().replace_all(&authorization_redacted, "******");
     audit_key_value_regex()
         .replace_all(&bearer_redacted, |captures: &Captures| {
             format!("{}{}[redacted]", &captures[1], &captures[2])
@@ -1472,6 +1478,15 @@ fn audit_key_value_regex() -> &'static Regex {
             r#"(?i)\b(cookie|set-cookie|token|password|secret|credential|api[_-]?key|access[_-]?key|secret[_-]?key)\b(\s*[:=]\s*)("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s,;]+)"#,
         )
         .expect("valid audit key/value regex")
+    })
+}
+
+fn audit_json_key_value_regex() -> &'static Regex {
+    AUDIT_JSON_KEY_VALUE_REGEX.get_or_init(|| {
+        Regex::new(
+            r#"(?i)("(?:authorization|cookie|set-cookie|token|password|secret|credential|api[_-]?key|access[_-]?key|secret[_-]?key)"\s*:\s*")((?:\\.|[^"\\])*)""#,
+        )
+        .expect("valid audit json key/value regex")
     })
 }
 
@@ -2496,6 +2511,19 @@ mod local_manifest_tests {
                 "Authorization: Bearer token-123; apiKey=abc123 cookie=session=xyz https://example.com/file.zip?token=secret#frag"
             ),
             "Authorization: [redacted]; apiKey=[redacted] cookie=[redacted] https://example.com/file.zip?[redacted]"
+        );
+    }
+
+    #[test]
+    fn sanitize_audit_preview_redacts_truncated_json_like_sensitive_pairs() {
+        let preview = r#"{"apiKey":"abc123","downloadUrl":"https://example.com/file.zip?X-Amz-Signature=secret#frag","token":"secret-token""#;
+
+        assert_eq!(
+            sanitize_audit_preview(preview),
+            serde_json::Value::String(
+                r#"{"apiKey":"[redacted]","downloadUrl":"https://example.com/file.zip?[redacted]","token":"[redacted]""#
+                    .to_string()
+            )
         );
     }
 
