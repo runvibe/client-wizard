@@ -160,21 +160,41 @@ export function auditNetworkError(
 
 type ResponsePreview =
   | { bodyPreview?: unknown; bodyPreviewTruncated?: boolean; bodyPreviewError?: string }
-  | { binarySummary: { bytes?: number; contentType: string } };
+  | { binarySummary: { bytes?: number; contentType: string; sha256?: string } };
 
 async function createResponsePreview(response: Response, previewBinary: boolean): Promise<ResponsePreview> {
-  if (previewBinary) {
-    void previewBinary;
-  }
-
   const contentType = response.headers.get("content-type") ?? "";
   if (!isTextLikeContentType(contentType)) {
-    return {
-      binarySummary: {
-        bytes: parseContentLength(response.headers.get("content-length")),
-        contentType
-      }
-    };
+    const bytes = parseContentLength(response.headers.get("content-length"));
+
+    if (!previewBinary) {
+      return {
+        binarySummary: {
+          bytes,
+          contentType
+        }
+      };
+    }
+
+    try {
+      const body = await response.clone().arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", body);
+
+      return {
+        binarySummary: {
+          bytes: body.byteLength,
+          contentType,
+          sha256: bytesToHex(digest)
+        }
+      };
+    } catch (caughtError) {
+      return {
+        binarySummary: {
+          bytes,
+          contentType
+        }
+      };
+    }
   }
 
   try {
@@ -235,4 +255,8 @@ function parseContentLength(value: string | null) {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function bytesToHex(buffer: ArrayBuffer) {
+  return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

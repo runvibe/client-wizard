@@ -1,3 +1,5 @@
+import { appendAuditEventToDisk } from "./native";
+
 export type AuditLevel = "debug" | "info" | "warning" | "error" | "security";
 
 export type AuditCategory =
@@ -56,9 +58,15 @@ export async function logAuditEvent(input: AuditEventInput) {
     searchableText: createSearchableText(input)
   };
 
-  const database = await openAuditDatabase();
-  await writeEvent(database, event);
-  database.close();
+  const indexedDbWrite = openAuditDatabase()
+    .then((database) =>
+      writeEvent(database, event).finally(() => {
+        database.close();
+      })
+    );
+  const diskWrite = appendAuditEventToDisk(event);
+
+  await Promise.allSettled([indexedDbWrite, diskWrite]);
 }
 
 export async function listAuditEvents(query: AuditSearchQuery = {}) {
