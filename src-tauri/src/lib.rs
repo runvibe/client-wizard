@@ -96,6 +96,16 @@ struct DownloadFileResult {
     bytes: u64,
 }
 
+const AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const AUDIT_LOG_MAX_ROTATED_FILES: usize = 10;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditDiskWriteResult {
+    path: String,
+    bytes: u64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtractArchiveRequest {
@@ -486,6 +496,23 @@ async fn download_file(
         file_name: safe_file_name,
         bytes: downloaded_bytes,
     })
+}
+
+#[tauri::command]
+async fn append_audit_event(
+    app: AppHandle,
+    event: serde_json::Value,
+) -> Result<AuditDiskWriteResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Falha ao localizar dados da aplicacao: {error}"))?;
+    append_audit_event_to_dir(
+        &app_data_dir,
+        &event,
+        AUDIT_LOG_MAX_BYTES,
+        AUDIT_LOG_MAX_ROTATED_FILES,
+    )
 }
 
 #[tauri::command]
@@ -1594,6 +1621,7 @@ pub fn run() {
             download_package,
             execute_native,
             download_file,
+            append_audit_event,
             extract_archive,
             fs_execute,
             open_external_url,
@@ -1657,6 +1685,108 @@ fn open_about_window(app: &AppHandle, about_data: serde_json::Value) {
     {
         eprintln!("Falha ao abrir janela de about: {error}");
     }
+}
+
+fn append_audit_event_to_dir(
+    app_data_dir: &Path,
+    event: &serde_json::Value,
+    max_bytes: u64,
+    max_rotated_files: usize,
+) -> Result<AuditDiskWriteResult, String> {
+    let audit_dir = app_data_dir.join("audit");
+    fs::create_dir_all(&audit_dir)
+        .map_err(|error| format!("Falha ao criar diretorio de auditoria: {error}"))?;
+
+    let current_path = audit_dir.join("current.jsonl");
+    rotate_audit_log_if_needed(&audit_dir, &current_path, max_bytes, max_rotated_files)?;
+
+    let mut line = serde_json::to_string(event)
+        .map_err(|error| format!("Falha ao serializar evento de auditoria: {error}"))?;
+    line.push('\n');
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&current_path)
+        .map_err(|error| format!("Falha ao abrir arquivo de auditoria: {error}"))?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("Falha ao gravar auditoria em disco: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("Falha ao finalizar escrita da auditoria: {error}"))?;
+
+    let bytes = fs::metadata(&current_path)
+        .map_err(|error| format!("Falha ao ler metadados da auditoria: {error}"))?
+        .len();
+
+    Ok(AuditDiskWriteResult {
+        path: current_path.display().to_string(),
+        bytes,
+    })
+}
+
+fn rotate_audit_log_if_needed(
+    audit_dir: &Path,
+    current_path: &Path,
+    max_bytes: u64,
+    max_rotated_files: usize,
+) -> Result<(), String> {
+    if !current_path.exists() {
+        return Ok(());
+    }
+
+    let current_size = fs::metadata(current_path)
+        .map_err(|error| format!("Falha ao ler tamanho da auditoria: {error}"))?
+        .len();
+    if current_size < max_bytes {
+        return Ok(());
+    }
+
+    let rotated_path = unique_rotated_audit_log_path(audit_dir);
+    fs::rename(current_path, &rotated_path)
+        .map_err(|error| format!("Falha ao rotacionar auditoria: {error}"))?;
+    prune_rotated_audit_logs(audit_dir, max_rotated_files)
+}
+
+fn unique_rotated_audit_log_path(audit_dir: &Path) -> PathBuf {
+    let timestamp = audit_log_timestamp_for_file();
+    let mut candidate = audit_dir.join(format!("{timestamp}.jsonl"));
+    let mut suffix = 1_u32;
+
+    while candidate.exists() {
+        candidate = audit_dir.join(format!("{timestamp}-{suffix}.jsonl"));
+        suffix += 1;
+    }
+
+    candidate
+}
+
+fn audit_log_timestamp_for_file() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("audit-{millis}")
+}
+
+fn prune_rotated_audit_logs(audit_dir: &Path, max_rotated_files: usize) -> Result<(), String> {
+    let mut rotated = fs::read_dir(audit_dir)
+        .map_err(|error| format!("Falha ao listar auditorias rotacionadas: {error}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_string_lossy() != "current.jsonl"
+                && entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl")
+        })
+        .collect::<Vec<_>>();
+
+    rotated.sort_by_key(|entry| entry.metadata().ok().and_then(|metadata| metadata.modified().ok()));
+
+    while rotated.len() > max_rotated_files {
+        let entry = rotated.remove(0);
+        fs::remove_file(entry.path())
+            .map_err(|error| format!("Falha ao remover auditoria antiga: {error}"))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1839,6 +1969,44 @@ mod local_manifest_tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("selecionado"));
+    }
+
+    #[test]
+    fn append_audit_event_to_disk_writes_one_json_line() {
+        let dir = temp_dir("audit-jsonl");
+        let event = serde_json::json!({
+            "id": "event-1",
+            "action": "network.response",
+            "input": { "url": "https://example.com/manifest.json" }
+        });
+
+        let result = append_audit_event_to_dir(&dir, &event, 10 * 1024 * 1024, 10)
+            .expect("append audit event");
+        let content = fs::read_to_string(&result.path).expect("read jsonl");
+
+        assert_eq!(result.bytes, content.len() as u64);
+        assert!(content.ends_with('\n'));
+        assert!(content.lines().any(|line| line.contains("\"network.response\"")));
+    }
+
+    #[test]
+    fn append_audit_event_to_disk_rotates_when_limit_is_exceeded() {
+        let dir = temp_dir("audit-rotation");
+        let event = serde_json::json!({ "id": "event-1", "message": "abcdefghijklmnopqrstuvwxyz" });
+
+        append_audit_event_to_dir(&dir, &event, 20, 10).expect("first append");
+        append_audit_event_to_dir(&dir, &event, 20, 10).expect("second append");
+
+        let audit_dir = dir.join("audit");
+        let current = audit_dir.join("current.jsonl");
+        let rotated_count = fs::read_dir(&audit_dir)
+            .expect("read audit dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy() != "current.jsonl")
+            .count();
+
+        assert!(current.exists());
+        assert!(rotated_count >= 1);
     }
 
     #[cfg(unix)]

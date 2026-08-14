@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AuditEvent } from "./audit";
 import type { ExecutorResult, NativeCommand } from "./types";
 
 export type LaunchManifestPayload = {
@@ -15,6 +16,11 @@ export type DownloadFileRequest = {
 export type DownloadFileResult = {
   path: string;
   fileName: string;
+  bytes: number;
+};
+
+export type AuditDiskWriteResult = {
+  path: string;
   bytes: number;
 };
 
@@ -76,6 +82,10 @@ export async function executeNative(command: NativeCommand): Promise<ExecutorRes
 
 export async function downloadFile(request: DownloadFileRequest): Promise<DownloadFileResult> {
   return invoke<DownloadFileResult>("download_file", { request });
+}
+
+export async function appendAuditEventToDisk(event: AuditEvent): Promise<AuditDiskWriteResult> {
+  return invoke<AuditDiskWriteResult>("append_audit_event", { event });
 }
 
 export async function extractArchive(request: ExtractArchiveRequest): Promise<ExtractArchiveResult> {
