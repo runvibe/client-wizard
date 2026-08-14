@@ -1,3 +1,5 @@
+import { appendAuditEventToDisk } from "./native";
+
 export type AuditLevel = "debug" | "info" | "warning" | "error" | "security";
 
 export type AuditCategory =
@@ -45,19 +47,33 @@ const databaseName = "clientWizardAudit";
 const databaseVersion = 1;
 const eventsStoreName = "events";
 
-export async function logAuditEvent(input: AuditEventInput) {
-  const event: AuditEvent = {
+export function createAuditEvent(input: AuditEventInput): AuditEvent {
+  const sanitizedInput = sanitizeAuditPayload(input.input);
+  const sanitizedOutput = sanitizeAuditPayload(input.output);
+
+  return {
     ...input,
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
-    input: sanitizePayload(input.input),
-    output: sanitizePayload(input.output),
-    searchableText: createSearchableText(input)
+    input: sanitizedInput,
+    output: sanitizedOutput,
+    searchableText: createSearchableText({
+      ...input,
+      input: sanitizedInput,
+      output: sanitizedOutput
+    })
   };
+}
 
-  const database = await openAuditDatabase();
-  await writeEvent(database, event);
-  database.close();
+export async function logAuditEvent(input: AuditEventInput) {
+  const event = createAuditEvent(input);
+  const results = await Promise.allSettled([writeAuditEventToIndexedDb(event), appendAuditEventToDisk(event)]);
+
+  for (const result of results) {
+    if (result.status === "rejected") {
+      console.error("Falha ao persistir auditoria.", result.reason);
+    }
+  }
 }
 
 export async function listAuditEvents(query: AuditSearchQuery = {}) {
@@ -156,7 +172,16 @@ function readAllEvents(database: IDBDatabase) {
   });
 }
 
-function sanitizePayload(value: unknown): unknown {
+async function writeAuditEventToIndexedDb(event: AuditEvent) {
+  const database = await openAuditDatabase();
+  try {
+    await writeEvent(database, event);
+  } finally {
+    database.close();
+  }
+}
+
+export function sanitizeAuditPayload(value: unknown): unknown {
   if (value === undefined || value === null) {
     return value;
   }
@@ -166,7 +191,7 @@ function sanitizePayload(value: unknown): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value.slice(0, 50).map(sanitizePayload);
+    return value.slice(0, 50).map(sanitizeAuditPayload);
   }
 
   if (typeof value === "object") {
@@ -176,7 +201,7 @@ function sanitizePayload(value: unknown): unknown {
         sanitized[key] = "[redacted]";
         continue;
       }
-      sanitized[key] = sanitizePayload(entryValue);
+      sanitized[key] = sanitizeAuditPayload(entryValue);
     }
     return sanitized;
   }
@@ -197,8 +222,8 @@ function createSearchableText(input: AuditEventInput) {
       input.action,
       input.summary,
       input.error,
-      safeStringify(sanitizePayload(input.input)),
-      safeStringify(sanitizePayload(input.output))
+      safeStringify(input.input),
+      safeStringify(input.output)
     ]
       .filter(Boolean)
       .join(" ")
