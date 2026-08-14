@@ -98,6 +98,7 @@ struct DownloadFileResult {
 
 const AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUDIT_LOG_MAX_ROTATED_FILES: usize = 10;
+const AUDIT_BODY_PREVIEW_LIMIT: usize = 4 * 1024;
 static AUDIT_LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
@@ -504,10 +505,11 @@ async fn download_file(
 
     if !status.is_success() {
         let output = if is_text_like_content_type(&content_type) {
-            let body = response
-                .text()
-                .await
-                .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?;
+            let (body_preview, body_preview_truncated, body_bytes) = collect_text_response_preview(
+                &mut response,
+                AUDIT_BODY_PREVIEW_LIMIT,
+            )
+            .await?;
             serde_json::json!({
                 "status": status.as_u16(),
                 "statusText": status.canonical_reason().unwrap_or(""),
@@ -516,14 +518,11 @@ async fn download_file(
                 "contentType": content_type,
                 "contentLength": total_bytes,
                 "durationMs": started_at.elapsed().as_millis(),
-                "bodyPreview": sanitize_audit_text(&body.chars().take(4096).collect::<String>()),
-                "bodyPreviewTruncated": body.chars().count() > 4096
+                "bodyPreview": sanitize_audit_text(&body_preview),
+                "bodyPreviewTruncated": body_preview_truncated || body_bytes > AUDIT_BODY_PREVIEW_LIMIT as u64
             })
         } else {
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?;
+            let (body_bytes, body_sha256) = collect_binary_response_summary(&mut response).await?;
             serde_json::json!({
                 "status": status.as_u16(),
                 "statusText": status.canonical_reason().unwrap_or(""),
@@ -533,9 +532,9 @@ async fn download_file(
                 "contentLength": total_bytes,
                 "durationMs": started_at.elapsed().as_millis(),
                 "binarySummary": {
-                    "bytes": bytes.len(),
+                    "bytes": body_bytes,
                     "contentType": content_type.clone(),
-                    "sha256": hex::encode(Sha256::digest(&bytes))
+                    "sha256": body_sha256
                 }
             })
         };
@@ -1358,9 +1357,66 @@ fn is_text_like_content_type(content_type: &str) -> bool {
 
 fn split_audit_url(value: &str) -> (&str, &str) {
     let end = value
-        .find(char::is_whitespace)
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace() || is_audit_url_terminator(*ch))
+        .map(|(index, _)| index)
         .unwrap_or(value.len());
-    value.split_at(end)
+    let candidate = &value[..end];
+    let trim_end = candidate
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_audit_url_terminator(*ch))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    value.split_at(trim_end)
+}
+
+fn is_audit_url_terminator(ch: char) -> bool {
+    matches!(ch, '"' | '\'' | ')' | ']' | '}' | ',' | ';' | '>')
+}
+
+async fn collect_text_response_preview(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<(String, bool, u64), String> {
+    let mut preview = Vec::new();
+    let mut total_bytes = 0_u64;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?
+    {
+        total_bytes += chunk.len() as u64;
+        if preview.len() < limit {
+            let remaining = limit - preview.len();
+            preview.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        }
+    }
+
+    Ok((
+        String::from_utf8_lossy(&preview).into_owned(),
+        total_bytes > limit as u64,
+        total_bytes,
+    ))
+}
+
+async fn collect_binary_response_summary(
+    response: &mut reqwest::Response,
+) -> Result<(u64, String), String> {
+    let mut total_bytes = 0_u64;
+    let mut hasher = Sha256::new();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?
+    {
+        total_bytes += chunk.len() as u64;
+        hasher.update(&chunk);
+    }
+
+    Ok((total_bytes, hex::encode(hasher.finalize())))
 }
 
 fn response_headers_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
@@ -2234,6 +2290,14 @@ mod local_manifest_tests {
         assert_eq!(
             sanitize_audit_url("https://example.com/file.zip?token=secret#section"),
             "https://example.com/file.zip?[redacted]"
+        );
+    }
+
+    #[test]
+    fn sanitize_audit_text_redacts_url_inside_json_string() {
+        assert_eq!(
+            sanitize_audit_text(r#"{"url":"https://example.com/file.zip?token=secret"}"#),
+            r#"{"url":"https://example.com/file.zip?[redacted]"}"#
         );
     }
 
