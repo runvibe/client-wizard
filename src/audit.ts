@@ -49,13 +49,12 @@ const databaseVersion = 1;
 const eventsStoreName = "events";
 
 export async function logAuditEvent(input: AuditEventInput) {
+  const sanitizedInput = sanitizePersistedAuditEvent(input);
   const event: AuditEvent = {
-    ...input,
+    ...sanitizedInput,
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
-    input: sanitizeAuditPayload(input.input),
-    output: sanitizeAuditPayload(input.output),
-    searchableText: createSearchableText(input)
+    searchableText: createSearchableText(sanitizedInput)
   };
 
   const indexedDbWrite = openAuditDatabase()
@@ -171,7 +170,7 @@ export function sanitizeAuditPayload(value: unknown): unknown {
   }
 
   if (typeof value === "string") {
-    return redactSecrets(truncate(value));
+    return sanitizeAuditString(value);
   }
 
   if (Array.isArray(value)) {
@@ -181,7 +180,7 @@ export function sanitizeAuditPayload(value: unknown): unknown {
   if (typeof value === "object") {
     const sanitized: Record<string, unknown> = {};
     for (const [key, entryValue] of Object.entries(value)) {
-      if (/password|token|secret|authorization|cookie|script/i.test(key)) {
+      if (/password|token|secret|authorization|cookie|credential|api[-_]?key|access[-_]?key|secret[-_]?key|script/i.test(key)) {
         sanitized[key] = "[redacted]";
         continue;
       }
@@ -191,6 +190,47 @@ export function sanitizeAuditPayload(value: unknown): unknown {
   }
 
   return value;
+}
+
+export function sanitizeAuditUrl(value: string) {
+  try {
+    const base = typeof window !== "undefined" && window.location?.href ? window.location.href : undefined;
+    const parsed = base ? new URL(value, base) : new URL(value);
+    return `${parsed.origin}${parsed.pathname}${parsed.search ? "?[redacted]" : ""}`;
+  } catch {
+    const queryIndex = value.indexOf("?");
+    if (queryIndex >= 0) {
+      return `${value.slice(0, queryIndex)}?[redacted]`;
+    }
+
+    const fragmentIndex = value.indexOf("#");
+    if (fragmentIndex >= 0) {
+      return value.slice(0, fragmentIndex);
+    }
+
+    return value;
+  }
+}
+
+export function sanitizeAuditText(value: string) {
+  return redactSecrets(
+    value.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (match) => {
+      const [url, trailing] = splitAuditUrl(match);
+      return `${sanitizeAuditUrl(url)}${trailing}`;
+    })
+  );
+}
+
+function sanitizePersistedAuditEvent(input: AuditEventInput): AuditEventInput {
+  return {
+    ...input,
+    manifestUrl: typeof input.manifestUrl === "string" ? sanitizeAuditUrl(input.manifestUrl) : input.manifestUrl,
+    manifestName: typeof input.manifestName === "string" ? sanitizeAuditText(input.manifestName) : input.manifestName,
+    summary: sanitizeAuditText(input.summary),
+    input: sanitizeAuditPayload(input.input),
+    output: sanitizeAuditPayload(input.output),
+    error: typeof input.error === "string" ? sanitizeAuditText(input.error) : input.error
+  };
 }
 
 function createSearchableText(input: AuditEventInput) {
@@ -206,8 +246,8 @@ function createSearchableText(input: AuditEventInput) {
       input.action,
       input.summary,
       input.error,
-      safeStringify(sanitizeAuditPayload(input.input)),
-      safeStringify(sanitizeAuditPayload(input.output))
+      safeStringify(input.input),
+      safeStringify(input.output)
     ]
       .filter(Boolean)
       .join(" ")
@@ -229,14 +269,27 @@ function safeStringify(value: unknown) {
   }
 }
 
+function sanitizeAuditString(value: string) {
+  return truncate(sanitizeAuditText(value));
+}
+
 function redactSecrets(value: string) {
   return value
-    .replace(/(token|secret|password|authorization)\s*[:=]\s*["']?[^"',\s]+/gi, "$1=[redacted]")
-    .replace(/Bearer\s+[a-z0-9._-]+/gi, "Bearer [redacted]");
+    .replace(/\b(authorization)\b(\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+/gi, (_match, key, separator) => `${key}${separator}[redacted]`)
+    .replace(
+      /\b(cookie|set-cookie|token|secret|password|credential|api[-_]?key|access[-_]?key|secret[-_]?key)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      (_match, key, separator) => `${key}${separator}[redacted]`
+    )
+    .replace(/\bBearer\s+[a-z0-9._=-]+\b/gi, "Bearer [redacted]");
 }
 
 function truncate(value: string) {
   return value.length > 2_000 ? `${value.slice(0, 2_000)}...[truncated]` : value;
+}
+
+function splitAuditUrl(value: string) {
+  const trailing = value.match(/[)\]}'",;>]+$/u)?.[0] ?? "";
+  return [value.slice(0, value.length - trailing.length), trailing] as const;
 }
 
 function csvCell(value: unknown) {

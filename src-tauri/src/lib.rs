@@ -1,3 +1,4 @@
+use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -100,6 +101,9 @@ const AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUDIT_LOG_MAX_ROTATED_FILES: usize = 10;
 const AUDIT_BODY_PREVIEW_LIMIT: usize = 4 * 1024;
 static AUDIT_LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static AUDIT_KEY_VALUE_REGEX: OnceLock<Regex> = OnceLock::new();
+static AUDIT_AUTHORIZATION_REGEX: OnceLock<Regex> = OnceLock::new();
+static AUDIT_BEARER_REGEX: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -518,7 +522,7 @@ async fn download_file(
                 "contentType": content_type,
                 "contentLength": total_bytes,
                 "durationMs": started_at.elapsed().as_millis(),
-                "bodyPreview": sanitize_audit_text(&body_preview),
+                "bodyPreview": sanitize_audit_preview(&body_preview),
                 "bodyPreviewTruncated": body_preview_truncated || body_bytes > AUDIT_BODY_PREVIEW_LIMIT as u64
             })
         } else {
@@ -560,18 +564,44 @@ async fn download_file(
 
     let mut output = tokio::fs::File::create(&file_path)
         .await
-        .map_err(|error| format!("Falha ao criar arquivo de download: {error}"))?;
+        .map_err(|error| {
+            emit_download_terminal_error(
+                &app,
+                &request_id,
+                &audited_url,
+                started_at,
+                0,
+                &format!("Falha ao criar arquivo de download: {error}"),
+            );
+            format!("Falha ao criar arquivo de download: {error}")
+        })?;
     let mut downloaded_bytes = 0_u64;
 
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Falha ao ler chunk de download: {error}"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        emit_download_terminal_error(
+            &app,
+            &request_id,
+            &audited_url,
+            started_at,
+            downloaded_bytes,
+            &format!("Falha ao ler chunk de download: {error}"),
+        );
+        format!("Falha ao ler chunk de download: {error}")
+    })? {
         output
             .write_all(&chunk)
             .await
-            .map_err(|error| format!("Falha ao gravar chunk de download: {error}"))?;
+            .map_err(|error| {
+                emit_download_terminal_error(
+                    &app,
+                    &request_id,
+                    &audited_url,
+                    started_at,
+                    downloaded_bytes,
+                    &format!("Falha ao gravar chunk de download: {error}"),
+                );
+                format!("Falha ao gravar chunk de download: {error}")
+            })?;
         downloaded_bytes += chunk.len() as u64;
         let progress = total_bytes
             .map(|total| ((downloaded_bytes as f64 / total as f64) * 100.0).round() as u8)
@@ -594,7 +624,17 @@ async fn download_file(
     output
         .flush()
         .await
-        .map_err(|error| format!("Falha ao finalizar arquivo de download: {error}"))?;
+        .map_err(|error| {
+            emit_download_terminal_error(
+                &app,
+                &request_id,
+                &audited_url,
+                started_at,
+                downloaded_bytes,
+                &format!("Falha ao finalizar arquivo de download: {error}"),
+            );
+            format!("Falha ao finalizar arquivo de download: {error}")
+        })?;
 
     emit_native_progress(
         &app,
@@ -1324,14 +1364,34 @@ fn sanitize_audit_url(value: &str) -> String {
                 sanitized.to_string()
             }
         }
-        Err(_) => match value.find('?').or_else(|| value.find('#')) {
-            Some(index) => value[..index].to_string(),
-            None => value.to_string(),
-        },
+        Err(_) => {
+            if let Some(index) = value.find('?') {
+                format!("{}?[redacted]", &value[..index])
+            } else if let Some(index) = value.find('#') {
+                value[..index].to_string()
+            } else {
+                value.to_string()
+            }
+        }
     }
 }
 
 fn sanitize_audit_text(value: &str) -> String {
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) {
+        return sanitize_audit_json_value(parsed).to_string();
+    }
+
+    sanitize_non_json_audit_text(value)
+}
+
+fn sanitize_audit_preview(value: &str) -> serde_json::Value {
+    match serde_json::from_str::<serde_json::Value>(value) {
+        Ok(parsed) => sanitize_audit_json_value(parsed),
+        Err(_) => serde_json::Value::String(sanitize_non_json_audit_text(value)),
+    }
+}
+
+fn sanitize_non_json_audit_text(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut remaining = value;
     while let Some(index) = remaining.find("http") {
@@ -1342,7 +1402,121 @@ fn sanitize_audit_text(value: &str) -> String {
         remaining = tail;
     }
     output.push_str(remaining);
-    output
+    redact_sensitive_audit_text(&output)
+}
+
+fn sanitize_audit_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, entry_value)| {
+                    let value = if is_sensitive_audit_key(&key) {
+                        serde_json::Value::String("[redacted]".to_string())
+                    } else {
+                        sanitize_audit_json_value(entry_value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(sanitize_audit_json_value)
+                .collect(),
+        ),
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(sanitize_non_json_audit_text(&text))
+        }
+        other => other,
+    }
+}
+
+fn redact_sensitive_audit_text(value: &str) -> String {
+    let authorization_redacted = audit_authorization_regex().replace_all(value, |captures: &Captures| {
+        format!("{}{}[redacted]", &captures[1], &captures[2])
+    });
+    let bearer_redacted = audit_bearer_regex().replace_all(&authorization_redacted, "Bearer [redacted]");
+    audit_key_value_regex()
+        .replace_all(&bearer_redacted, |captures: &Captures| {
+            format!("{}{}[redacted]", &captures[1], &captures[2])
+        })
+        .into_owned()
+}
+
+fn is_sensitive_audit_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>();
+
+    [
+        "token",
+        "password",
+        "secret",
+        "authorization",
+        "cookie",
+        "credential",
+        "apikey",
+        "accesskey",
+        "secretkey",
+    ]
+    .iter()
+    .any(|pattern| normalized.contains(pattern))
+}
+
+fn audit_key_value_regex() -> &'static Regex {
+    AUDIT_KEY_VALUE_REGEX.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b(cookie|set-cookie|token|password|secret|credential|api[_-]?key|access[_-]?key|secret[_-]?key)\b(\s*[:=]\s*)("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s,;]+)"#,
+        )
+        .expect("valid audit key/value regex")
+    })
+}
+
+fn audit_authorization_regex() -> &'static Regex {
+    AUDIT_AUTHORIZATION_REGEX.get_or_init(|| {
+        Regex::new(r#"(?i)\b(authorization)\b(\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+"#)
+            .expect("valid audit authorization regex")
+    })
+}
+
+fn audit_bearer_regex() -> &'static Regex {
+    AUDIT_BEARER_REGEX.get_or_init(|| {
+        Regex::new(r#"(?i)\bBearer\s+[A-Za-z0-9._=-]+\b"#).expect("valid audit bearer regex")
+    })
+}
+
+fn emit_download_terminal_error(
+    app: &AppHandle,
+    request_id: &str,
+    audited_url: &str,
+    started_at: Instant,
+    downloaded_bytes: u64,
+    error_message: &str,
+) {
+    emit_network_audit(
+        app,
+        NativeNetworkAuditPayload {
+            level: "error".to_string(),
+            category: "network".to_string(),
+            action: "network.error".to_string(),
+            summary: format!("API error: GET {audited_url}"),
+            input: Some(serde_json::json!({
+                "requestId": request_id,
+                "method": "GET",
+                "url": audited_url,
+                "source": "native-download"
+            })),
+            output: Some(serde_json::json!({
+                "durationMs": started_at.elapsed().as_millis(),
+                "responseAvailable": true,
+                "bytesDownloaded": downloaded_bytes
+            })),
+            error: Some(sanitize_audit_text(error_message)),
+        },
+    );
 }
 
 fn is_text_like_content_type(content_type: &str) -> bool {
@@ -2291,6 +2465,10 @@ mod local_manifest_tests {
             sanitize_audit_url("https://example.com/file.zip?token=secret#section"),
             "https://example.com/file.zip?[redacted]"
         );
+        assert_eq!(
+            sanitize_audit_url("/downloads/file.zip?token=secret#section"),
+            "/downloads/file.zip?[redacted]"
+        );
     }
 
     #[test]
@@ -2298,6 +2476,26 @@ mod local_manifest_tests {
         assert_eq!(
             sanitize_audit_text(r#"{"url":"https://example.com/file.zip?token=secret"}"#),
             r#"{"url":"https://example.com/file.zip?[redacted]"}"#
+        );
+    }
+
+    #[test]
+    fn sanitize_audit_text_redacts_sensitive_json_preview_values() {
+        assert_eq!(
+            sanitize_audit_text(
+                r#"{"downloadUrl":"https://example.com/file.zip?token=secret#frag","apiKey":"abc123","nested":{"password":"hunter2","note":"open https://example.com/logs.txt?sig=123"}}"#
+            ),
+            r#"{"apiKey":"[redacted]","downloadUrl":"https://example.com/file.zip?[redacted]","nested":{"note":"open https://example.com/logs.txt?[redacted]","password":"[redacted]"}}"#
+        );
+    }
+
+    #[test]
+    fn sanitize_audit_text_redacts_sensitive_text_pairs() {
+        assert_eq!(
+            sanitize_audit_text(
+                "Authorization: Bearer token-123; apiKey=abc123 cookie=session=xyz https://example.com/file.zip?token=secret#frag"
+            ),
+            "Authorization: [redacted]; apiKey=[redacted] cookie=[redacted] https://example.com/file.zip?[redacted]"
         );
     }
 
