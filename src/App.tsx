@@ -14,6 +14,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Progress, ProgressLabel } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { eventsToCsv, listAuditEvents, logAuditEvent, type AuditCategory, type AuditEvent, type AuditEventInput, type AuditLevel } from "./audit";
+import { auditedFetch, type NetworkAuditSink, type NetworkAuditSource } from "./auditedFetch";
 import {
   clearLocalManifestScope,
   confirmLocalManifestScope,
@@ -263,12 +264,16 @@ export function App() {
       summary: "Carregando manifesto",
       input: { source: sourceData, sourceKind: source }
     });
-    const response = await fetch(url);
+    const response = await auditedFetch(url, undefined, {
+      audit,
+      source: "manifest",
+      label: "Manifesto"
+    });
     if (!response.ok) {
       throw new Error(`Manifesto retornou HTTP ${response.status}.`);
     }
     const loadedManifest = validateManifest(await response.json(), sourceData);
-    const loadedDocuments = await loadConsentDocuments(loadedManifest, sourceData);
+    const loadedDocuments = await loadConsentDocuments(loadedManifest, sourceData, audit);
 
     setManifestSource(sourceData);
     setManifestUrl(sourceData.display);
@@ -332,7 +337,7 @@ export function App() {
     }
 
     const loadedManifest = validateManifest(parsed, source);
-    const loadedDocuments = await loadConsentDocuments(loadedManifest, source);
+    const loadedDocuments = await loadConsentDocuments(loadedManifest, source, audit);
 
     setManifestSource(source);
     setManifestUrl(source.display);
@@ -379,7 +384,11 @@ export function App() {
       }
       let script: string;
       try {
-        script = await loadEntryScript(manifest.entry, manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl });
+        script = await loadEntryScript(
+          manifest.entry,
+          manifestSource ?? { kind: "remote-url", url: manifestUrl, display: manifestUrl },
+          audit
+        );
       } finally {
         if (localManifestPath) {
           await deactivateLocalManifestScope();
@@ -720,7 +729,7 @@ export function App() {
         const reference = resolveReference(decodedHref, manifestSource ?? { kind: "remote-url", url: manifestUrl || window.location.href, display: manifestUrl || window.location.href }, "markdown");
         const markdown =
           reference.kind === "remote-url"
-            ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`)
+            ? await fetchRemoteText(reference.url, `Markdown ${reference.url}`, { audit, source: "markdown" })
             : await readLocalConsentDocument({ baseDir: reference.baseDir, relativePath: reference.relativePath });
         const resolvedUrl = reference.kind === "remote-url" ? reference.url : reference.display;
         setActiveSurface({
@@ -1930,18 +1939,18 @@ globalThis.onmessage = (event) => {
 `;
 }
 
-async function loadEntryScript(entry: ManifestEntry, source: ManifestSource) {
+async function loadEntryScript(entry: ManifestEntry, source: ManifestSource, audit: NetworkAuditSink) {
   if (entry.type === "script") {
     const reference = resolveReference(entry.url, source, "artefato");
     return reference.kind === "remote-url"
-      ? fetchRemoteText(reference.url, "Artefato")
+      ? fetchRemoteText(reference.url, "Artefato", { audit, source: "artifact" })
       : readLocalTextFile({ baseDir: reference.baseDir, relativePath: reference.relativePath });
   }
 
   const reference = resolveReference(entry.url, source, "artefato");
   const bytes =
     reference.kind === "remote-url"
-      ? await fetchRemoteArrayBuffer(reference.url, "Artefato")
+      ? await fetchRemoteArrayBuffer(reference.url, "Artefato", { audit, source: "artifact" })
       : Uint8Array.from(await readLocalBinaryFile({ baseDir: reference.baseDir, relativePath: reference.relativePath })).buffer;
   const zip = await JSZip.loadAsync(bytes);
   const scriptPath = entry.script ?? "wizard.js";
@@ -1953,7 +1962,11 @@ async function loadEntryScript(entry: ManifestEntry, source: ManifestSource) {
   return scriptFile.async("text");
 }
 
-async function loadConsentDocuments(manifest: ClientWizardManifest, source: ManifestSource): Promise<ConsentDocument[]> {
+async function loadConsentDocuments(
+  manifest: ClientWizardManifest,
+  source: ManifestSource,
+  audit: NetworkAuditSink
+): Promise<ConsentDocument[]> {
   const documentEntries: Array<{ kind: ConsentDocumentKind; url: string }> = [
     ...(manifest.terms ?? []).map((url) => ({ kind: "terms" as const, url })),
     ...(manifest.license ?? []).map((url) => ({ kind: "license" as const, url })),
@@ -1965,7 +1978,11 @@ async function loadConsentDocuments(manifest: ClientWizardManifest, source: Mani
       const reference = resolveReference(entry.url, source, documentKindLabel(entry.kind));
       const markdown =
         reference.kind === "remote-url"
-          ? await fetchRemoteText(reference.url, `Documento ${reference.url}`, { validateContentType: isAllowedDocumentContentType })
+          ? await fetchRemoteText(reference.url, `Documento ${reference.url}`, {
+              audit,
+              source: "document",
+              validateContentType: isAllowedDocumentContentType
+            })
           : await readLocalConsentDocument({ baseDir: reference.baseDir, relativePath: reference.relativePath });
       const documentUrl = reference.kind === "remote-url" ? reference.url : reference.display;
       const name = resolveDocumentName(markdown, documentUrl);
@@ -2436,9 +2453,13 @@ function resolveReference(value: string, source: ManifestSource, label: string):
 async function fetchRemoteText(
   url: string,
   label: string,
-  options?: { validateContentType?: (contentType: string) => boolean }
+  options: { audit: NetworkAuditSink; source: NetworkAuditSource; validateContentType?: (contentType: string) => boolean }
 ) {
-  const response = await fetch(url);
+  const response = await auditedFetch(url, undefined, {
+    audit: options.audit,
+    source: options.source,
+    label
+  });
   if (!response.ok) {
     throw new Error(`${label} retornou HTTP ${response.status}.`);
   }
@@ -2449,8 +2470,17 @@ async function fetchRemoteText(
   return response.text();
 }
 
-async function fetchRemoteArrayBuffer(url: string, label: string) {
-  const response = await fetch(url);
+async function fetchRemoteArrayBuffer(
+  url: string,
+  label: string,
+  options: { audit: NetworkAuditSink; source: NetworkAuditSource }
+) {
+  const response = await auditedFetch(url, undefined, {
+    audit: options.audit,
+    source: options.source,
+    label,
+    previewBinary: true
+  });
   if (!response.ok) {
     throw new Error(`${label} retornou HTTP ${response.status}.`);
   }
