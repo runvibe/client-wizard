@@ -31,11 +31,13 @@ export async function auditedFetch(
   const requestId = crypto.randomUUID();
   const method = normalizeMethod(init?.method);
   const startedAt = performance.now();
+  const auditedUrl = sanitizeAuditUrl(url);
+  const auditedLabel = sanitizeAuditText(options.label);
 
   auditNetworkRequest(options.audit, {
     requestId,
     method,
-    url,
+    url: auditedUrl,
     source: options.source,
     headers: sanitizeHeaders(init?.headers)
   });
@@ -48,9 +50,9 @@ export async function auditedFetch(
     auditNetworkResponse(options.audit, {
       requestId,
       method,
-      url,
+      url: auditedUrl,
       source: options.source,
-      label: options.label,
+      label: auditedLabel,
       response,
       durationMs,
       preview
@@ -63,9 +65,9 @@ export async function auditedFetch(
     auditNetworkError(options.audit, {
       requestId,
       method,
-      url,
+      url: auditedUrl,
       source: options.source,
-      label: options.label,
+      label: auditedLabel,
       durationMs,
       error: caughtError
     });
@@ -259,4 +261,18 @@ function parseContentLength(value: string | null) {
 
 function bytesToHex(buffer: ArrayBuffer) {
   return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function sanitizeAuditUrl(value: string) {
+  try {
+    const base = typeof window !== "undefined" && window.location?.href ? window.location.href : undefined;
+    const parsed = base ? new URL(value, base) : new URL(value);
+    return `${parsed.origin}${parsed.pathname}${parsed.search ? "?[redacted]" : ""}`;
+  } catch {
+    return value.replace(/([?#]).*$/, "");
+  }
+}
+
+function sanitizeAuditText(value: string) {
+  return value.replace(/https?:\/\/[^\s<>"'`]+/gi, (match) => sanitizeAuditUrl(match));
 }
