@@ -94,6 +94,8 @@ type NativeProgressEvent = {
   message: string;
 };
 
+type NativeNetworkAuditEvent = Omit<AuditEventInput, "sessionId" | "runtimeId" | "manifestUrl" | "manifestName">;
+
 const localhostNames = new Set(["localhost", "127.0.0.1", "::1"]);
 
 export function App() {
@@ -163,6 +165,11 @@ export function App() {
     Promise.all([
       listen<NativeProgressEvent>("client-wizard://download-progress", (event) => applyNativeProgress(event.payload)),
       listen<NativeProgressEvent>("client-wizard://extract-progress", (event) => applyNativeProgress(event.payload)),
+      listen<NativeNetworkAuditEvent>("client-wizard://network-audit", (event) => {
+        if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
+          audit(event.payload);
+        }
+      }),
       listen<LaunchManifestPayload>("client-wizard-open-manifest", (event) => {
         if (!isAuditWindow && !isAboutWindow && !isDocumentWindow) {
           void runManifestLoad(() => loadRemoteManifest(event.payload.manifestUrl, event.payload.source));

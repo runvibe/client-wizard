@@ -137,6 +137,18 @@ struct NativeProgressEvent {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct NativeNetworkAuditPayload {
+    level: String,
+    category: String,
+    action: String,
+    summary: String,
+    input: Option<serde_json::Value>,
+    output: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LaunchManifestPayload {
     manifest_url: String,
     source: String,
@@ -408,6 +420,9 @@ async fn download_file(
         .filter(|name| !name.trim().is_empty())
         .ok_or_else(|| "Nome do arquivo de download nao identificado.".to_string())?;
     let safe_file_name = sanitize_file_name(&file_name)?;
+    let request_id = request.operation_id.clone();
+    let audited_url = sanitize_audit_url(url.as_str());
+    let started_at = Instant::now();
     let download_dir = app
         .path()
         .app_cache_dir()
@@ -421,7 +436,7 @@ async fn download_file(
         &app,
         "client-wizard://download-progress",
         NativeProgressEvent {
-            operation_id: request.operation_id.clone(),
+            operation_id: request_id.clone(),
             phase: "download".to_string(),
             progress: 0,
             downloaded_bytes: Some(0),
@@ -430,21 +445,124 @@ async fn download_file(
         },
     );
 
+    emit_network_audit(
+        &app,
+        NativeNetworkAuditPayload {
+            level: "info".to_string(),
+            category: "network".to_string(),
+            action: "network.request".to_string(),
+            summary: format!("API request: GET {audited_url}"),
+            input: Some(serde_json::json!({
+                "requestId": request_id.clone(),
+                "method": "GET",
+                "url": audited_url.clone(),
+                "source": "native-download",
+                "headers": {}
+            })),
+            output: None,
+            error: None,
+        },
+    );
+
     let mut response = reqwest::Client::new()
         .get(url)
         .send()
         .await
-        .map_err(|error| format!("Falha ao baixar arquivo: {error}"))?;
+        .map_err(|error| {
+            emit_network_audit(
+                &app,
+                NativeNetworkAuditPayload {
+                    level: "error".to_string(),
+                    category: "network".to_string(),
+                    action: "network.error".to_string(),
+                    summary: format!("API error: GET {audited_url}"),
+                    input: Some(serde_json::json!({
+                        "requestId": request_id.clone(),
+                        "method": "GET",
+                        "url": audited_url.clone(),
+                        "source": "native-download"
+                    })),
+                    output: Some(serde_json::json!({
+                        "durationMs": started_at.elapsed().as_millis(),
+                        "responseAvailable": false
+                    })),
+                    error: Some(sanitize_audit_text(&error.to_string())),
+                },
+            );
+            format!("Falha ao baixar arquivo: {error}")
+        })?;
 
-    if !response.status().is_success() {
-        return Err(format!("Download retornou HTTP {}.", response.status()));
+    let status = response.status();
+    let headers = response_headers_to_json(response.headers());
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let total_bytes = response.content_length();
+
+    if !status.is_success() {
+        let output = if is_text_like_content_type(&content_type) {
+            let body = response
+                .text()
+                .await
+                .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?;
+            serde_json::json!({
+                "status": status.as_u16(),
+                "statusText": status.canonical_reason().unwrap_or(""),
+                "ok": false,
+                "headers": headers,
+                "contentType": content_type,
+                "contentLength": total_bytes,
+                "durationMs": started_at.elapsed().as_millis(),
+                "bodyPreview": sanitize_audit_text(&body.chars().take(4096).collect::<String>()),
+                "bodyPreviewTruncated": body.chars().count() > 4096
+            })
+        } else {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| format!("Falha ao ler resposta de download: {error}"))?;
+            serde_json::json!({
+                "status": status.as_u16(),
+                "statusText": status.canonical_reason().unwrap_or(""),
+                "ok": false,
+                "headers": headers,
+                "contentType": content_type,
+                "contentLength": total_bytes,
+                "durationMs": started_at.elapsed().as_millis(),
+                "binarySummary": {
+                    "bytes": bytes.len(),
+                    "contentType": content_type.clone(),
+                    "sha256": hex::encode(Sha256::digest(&bytes))
+                }
+            })
+        };
+        emit_network_audit(
+            &app,
+            NativeNetworkAuditPayload {
+                level: "error".to_string(),
+                category: "network".to_string(),
+                action: "network.response".to_string(),
+                summary: format!("API response {}: {}", status.as_u16(), audited_url),
+                input: Some(serde_json::json!({
+                    "requestId": request_id.clone(),
+                    "method": "GET",
+                    "url": audited_url.clone(),
+                    "source": "native-download"
+                })),
+                output: Some(output),
+                error: None,
+            },
+        );
+        return Err(format!("Download retornou HTTP {}.", status));
     }
 
-    let total_bytes = response.content_length();
-    let mut downloaded_bytes = 0_u64;
     let mut output = tokio::fs::File::create(&file_path)
         .await
         .map_err(|error| format!("Falha ao criar arquivo de download: {error}"))?;
+    let mut downloaded_bytes = 0_u64;
 
     while let Some(chunk) = response
         .chunk()
@@ -464,7 +582,7 @@ async fn download_file(
             &app,
             "client-wizard://download-progress",
             NativeProgressEvent {
-                operation_id: request.operation_id.clone(),
+                operation_id: request_id.clone(),
                 phase: "download".to_string(),
                 progress,
                 downloaded_bytes: Some(downloaded_bytes),
@@ -483,12 +601,41 @@ async fn download_file(
         &app,
         "client-wizard://download-progress",
         NativeProgressEvent {
-            operation_id: request.operation_id,
+            operation_id: request_id.clone(),
             phase: "download".to_string(),
             progress: 100,
             downloaded_bytes: Some(downloaded_bytes),
             total_bytes,
             message: "Download concluido".to_string(),
+        },
+    );
+
+    emit_network_audit(
+        &app,
+        NativeNetworkAuditPayload {
+            level: "info".to_string(),
+            category: "network".to_string(),
+            action: "network.response".to_string(),
+            summary: format!("API response {}: {}", status.as_u16(), audited_url),
+            input: Some(serde_json::json!({
+                "requestId": request_id,
+                "method": "GET",
+                "url": audited_url,
+                "source": "native-download"
+            })),
+            output: Some(serde_json::json!({
+                "status": status.as_u16(),
+                "statusText": status.canonical_reason().unwrap_or(""),
+                "ok": true,
+                "headers": headers,
+                "contentType": content_type,
+                "contentLength": total_bytes,
+                "durationMs": started_at.elapsed().as_millis(),
+                "bytes": downloaded_bytes,
+                "fileName": safe_file_name,
+                "destination": "downloads"
+            })),
+            error: None,
         },
     );
 
@@ -1157,6 +1304,83 @@ fn infer_archive_format(path: &Path) -> String {
 
 fn emit_native_progress(app: &AppHandle, event: &str, payload: NativeProgressEvent) {
     let _ = app.emit(event, payload);
+}
+
+fn emit_network_audit(app: &AppHandle, payload: NativeNetworkAuditPayload) {
+    if let Err(error) = app.emit("client-wizard://network-audit", payload) {
+        eprintln!("Falha ao emitir auditoria de rede: {error}");
+    }
+}
+
+fn sanitize_audit_url(value: &str) -> String {
+    match Url::parse(value) {
+        Ok(url) => {
+            let mut sanitized = url;
+            let had_query = sanitized.query().is_some();
+            sanitized.set_query(None);
+            sanitized.set_fragment(None);
+            if had_query {
+                format!("{}?[redacted]", sanitized)
+            } else {
+                sanitized.to_string()
+            }
+        }
+        Err(_) => match value.find('?').or_else(|| value.find('#')) {
+            Some(index) => value[..index].to_string(),
+            None => value.to_string(),
+        },
+    }
+}
+
+fn sanitize_audit_text(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut remaining = value;
+    while let Some(index) = remaining.find("http") {
+        let (prefix, suffix) = remaining.split_at(index);
+        output.push_str(prefix);
+        let (url, tail) = split_audit_url(suffix);
+        output.push_str(&sanitize_audit_url(url));
+        remaining = tail;
+    }
+    output.push_str(remaining);
+    output
+}
+
+fn is_text_like_content_type(content_type: &str) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
+    content_type.contains("application/json")
+        || content_type.contains("text/")
+        || content_type.contains("application/xml")
+        || content_type.contains("application/xhtml+xml")
+        || content_type.contains("javascript")
+        || content_type.contains("markdown")
+}
+
+fn split_audit_url(value: &str) -> (&str, &str) {
+    let end = value
+        .find(char::is_whitespace)
+        .unwrap_or(value.len());
+    value.split_at(end)
+}
+
+fn response_headers_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    let mut output = serde_json::Map::new();
+    for (key, value) in headers.iter() {
+        let key_text = key.as_str().to_string();
+        let value_text = value.to_str().unwrap_or("").to_string();
+        if key_text.to_ascii_lowercase().contains("token")
+            || key_text.eq_ignore_ascii_case("set-cookie")
+            || key_text.eq_ignore_ascii_case("authorization")
+            || key_text.to_ascii_lowercase().contains("secret")
+            || key_text.to_ascii_lowercase().contains("password")
+            || key_text.to_ascii_lowercase().contains("credential")
+        {
+            output.insert(key_text, serde_json::Value::String("[redacted]".to_string()));
+        } else {
+            output.insert(key_text, serde_json::Value::String(value_text));
+        }
+    }
+    serde_json::Value::Object(output)
 }
 
 fn resolve_fs_path(app: &AppHandle, request: &FsPathRequest) -> Result<PathBuf, String> {
@@ -2003,6 +2227,36 @@ mod local_manifest_tests {
         assert_eq!(result.bytes, content.len() as u64);
         assert!(content.ends_with('\n'));
         assert!(content.lines().any(|line| line.contains("\"network.response\"")));
+    }
+
+    #[test]
+    fn sanitize_audit_url_redacts_query_and_fragment() {
+        assert_eq!(
+            sanitize_audit_url("https://example.com/file.zip?token=secret#section"),
+            "https://example.com/file.zip?[redacted]"
+        );
+    }
+
+    #[test]
+    fn response_headers_to_json_redacts_sensitive_values() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_static("Bearer abc123"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-api-token"),
+            reqwest::header::HeaderValue::from_static("secret"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("content-type"),
+            reqwest::header::HeaderValue::from_static("text/plain"),
+        );
+
+        let value = response_headers_to_json(&headers);
+        assert_eq!(value["authorization"].as_str(), Some("[redacted]"));
+        assert_eq!(value["x-api-token"].as_str(), Some("[redacted]"));
+        assert_eq!(value["content-type"].as_str(), Some("text/plain"));
     }
 
     #[test]
